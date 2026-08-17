@@ -1,5 +1,5 @@
 from tabulate import tabulate
-from typing import List
+from typing import Dict, List
 import os
 
 from langchain.docstore.document import Document
@@ -10,31 +10,33 @@ from .csv_processor import CSVProcessor
 class PDFLoader:
     APP_DOCS_DIR :str = 'app/documents/files/comply_sources'
     CSV_processor :CSVProcessor = CSVProcessor()
-    documents_list :List[str] = CSV_processor.filenames_list 
-    
+
     def load_documents(self) -> List[Document]:
-        total_documents = len(PDFLoader.documents_list)
+        source_rows :List[Dict[str, str]] = PDFLoader.CSV_processor.processed_documents
+        total_documents = len(source_rows)
         loaded_documents = 0
         failed_documents = 0
-        
+
         documents = []
-        for document_filename in PDFLoader.documents_list:
-            document_path = os.path.join(PDFLoader.APP_DOCS_DIR, document_filename)
+        for source_row in source_rows:
+            document_path = os.path.join(PDFLoader.APP_DOCS_DIR, source_row['filename'])
             print(f"Now loading {document_path}...")
 
             try:
                 loader = PDFMinerLoader(document_path)
-                documents.extend(loader.load())
+                loaded = loader.load()
+                # Attach the citation metadata now, while the row describing
+                # this file is in hand. Matching by position after the loop
+                # drifts the moment one file fails to load.
+                for document in loaded:
+                    modify_metadata_source(document, source_row)
+                documents.extend(loaded)
                 loaded_documents += 1
-                
+
             except Exception as e:
                 print(f"Failed to load {document_path}: {e}")
                 failed_documents += 1
-        
-        # Process the loaded documents
-        for idx, document in enumerate(documents):
-            modify_metadata_source(document, self.CSV_processor.processed_documents[idx])
-        
+
         display_summary(total_documents, loaded_documents, failed_documents)
         return documents
     
