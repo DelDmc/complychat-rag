@@ -16,3 +16,12 @@ config/logs
 ConversationaRetrievalChain_breakdown.txt
 complychat_preliminary_end_point.txt
 working_docs/
+
+# Local working notes — not for publication
+CLAUDE.md
+
+# Root-level env file (src/.env is covered above)
+.env
+
+# Source corpus, downloaded from the public FCA URLs in complyChat_sources.csv
+src/app/documents/files/comply_sources/
