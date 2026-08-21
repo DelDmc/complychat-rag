@@ -20,6 +20,9 @@ working_docs/
 # Local working notes — not for publication
 CLAUDE.md
 
+# Local RTK tooling state
+.rtk/
+
 # Root-level env file (src/.env is covered above)
 .env
 
