@@ -6,9 +6,12 @@ from langchain.docstore.document import Document
 from langchain.document_loaders.pdf import PDFMinerLoader
 
 from .csv_processor import CSVProcessor
+from .paths import APP_DOCS_DIR
 
 class PDFLoader:
-    APP_DOCS_DIR :str = 'app/documents/files/comply_sources'
+    # Anchored in app/documents/paths.py so it cannot drift from the path
+    # PDFDownloader writes into.
+    APP_DOCS_DIR :str = str(APP_DOCS_DIR)
     CSV_processor :CSVProcessor = CSVProcessor()
 
     def load_documents(self) -> List[Document]:
