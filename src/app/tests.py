@@ -1,7 +1,7 @@
 import os
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase
 
 from app.documents.pdf_loader import PDFLoader
 
@@ -70,7 +70,7 @@ CITATION_METADATA_FIX_DOCS = [
 ]
 
 
-class CitationMetadataRegressionTests(TestCase):
+class CitationMetadataRegressionTests(SimpleTestCase):
     '''Regression tests for the citation-metadata fix in pdf_loader.
 
     The pre-fix code attached citation metadata to documents by list position
@@ -80,28 +80,39 @@ class CitationMetadataRegressionTests(TestCase):
     '''
 
     def setUp(self):
+        # Every restoration is registered on addCleanup immediately after the
+        # corresponding mutation. tearDown alone is not crash-safe: if a later
+        # mutation in setUp raises, unittest skips tearDown and the class-level
+        # stubs leak into every subsequent test in the process.
         _FakePDFMinerLoader.fail_filenames = set()
         _FakePDFMinerLoader.docs_per_file = 1
+
         self._stub_csv_processor = _StubCSVProcessor(CITATION_METADATA_FIX_DOCS)
-        self._original_csv_processor = PDFLoader.CSV_processor
+        original_csv_processor = PDFLoader.CSV_processor
         PDFLoader.CSV_processor = self._stub_csv_processor
+        self.addCleanup(
+            lambda: setattr(PDFLoader, 'CSV_processor', original_csv_processor)
+        )
+
         # The pre-fix loader iterated this class attribute instead of
         # CSV_processor.processed_documents; keep it in step so the buggy
         # variant runs over the same four fake source files.
-        self._original_documents_list = getattr(PDFLoader, 'documents_list', None)
+        original_documents_list = getattr(PDFLoader, 'documents_list', None)
         PDFLoader.documents_list = self._stub_csv_processor.filenames_list
+
+        def restore_documents_list():
+            if original_documents_list is None:
+                del PDFLoader.documents_list
+            else:
+                PDFLoader.documents_list = original_documents_list
+
+        self.addCleanup(restore_documents_list)
+
         patcher = patch(
             'app.documents.pdf_loader.PDFMinerLoader', _FakePDFMinerLoader
         )
-        patcher.start()
         self.addCleanup(patcher.stop)
-
-    def tearDown(self):
-        PDFLoader.CSV_processor = self._original_csv_processor
-        if self._original_documents_list is None:
-            del PDFLoader.documents_list
-        else:
-            PDFLoader.documents_list = self._original_documents_list
+        patcher.start()
 
     def test_failed_load_does_not_shift_citation_metadata(self):
         # The second source file fails to load; the remaining documents must
