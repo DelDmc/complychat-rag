@@ -8,11 +8,20 @@ import time
 
 load_dotenv()
 
-def download_source_documents():
+def download_source_documents(allow_partial: bool = False):
     downloader = PDFDownloader()
-    downloader.download_documents()
+    results = downloader.download_documents()
+    if results['failed'] and not allow_partial:
+        raise RuntimeError(
+            f"{results['failed']}/{results['total']} source documents "
+            f"failed to download"
+        )
+    return results
 
 def process_source_documents():
+    # A partial corpus must never reach the embedding stage silently: the
+    # output would still look perfect while the index quietly misses
+    # documents — the exact failure class the citation bug taught us about.
     download_source_documents()
     from .vector_store import vectordb
     documents_loader = PDFLoader()

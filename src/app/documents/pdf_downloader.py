@@ -9,9 +9,11 @@ Usage (run from the ``src`` directory):
 
     python -m app.documents.pdf_downloader [--force]
 
-Requests are made sequentially and politely, with a timeout and a single
-retry per URL. Only files whose body starts with the ``%PDF-`` magic bytes
-are kept, so error pages are never written into the corpus directory.
+Requests are made sequentially and politely, with a timeout. Only transient
+problems (timeouts, connection errors, HTTP 5xx) are retried; permanent
+failures such as HTTP 404 or a non-PDF response body fail immediately.
+Only files whose body starts with the ``%PDF-`` magic bytes are kept, so
+error pages are never written into the corpus directory.
 
 Two groups of CSV links cannot be fetched directly by a programmatic
 client:
@@ -34,14 +36,21 @@ import time
 from typing import Dict, List, Tuple
 
 import requests
+from requests import exceptions as requests_exceptions
 from tabulate import tabulate
 
 from .csv_processor import CSVProcessor
+from .paths import APP_DOCS_DIR
 
 
 class PDFDownloader:
-    APP_DOCS_DIR: str = 'app/documents/files/comply_sources'
-    CSV_processor: CSVProcessor = None
+    # Anchored in app/documents/paths.py so it cannot drift from the path
+    # PDFLoader reads, and so CWD stops mattering.
+    APP_DOCS_DIR: str = str(APP_DOCS_DIR)
+
+    # Abort a download that streams past this size; no source document in the
+    # corpus is anywhere near it and it bounds damage from a misbehaving host.
+    MAX_DOWNLOAD_BYTES: int = 200 * 1024 * 1024
 
     # Be patient with slow regulator websites, but never hang forever.
     REQUEST_TIMEOUT_SECONDS: Tuple[int, int] = (10, 60)
@@ -126,7 +135,7 @@ class PDFDownloader:
     }
 
     def __init__(self, session: requests.Session = None):
-        PDFDownloader.CSV_processor = CSVProcessor()
+        self.csv_processor: CSVProcessor = CSVProcessor()
         self.session: requests.Session = session if session is not None \
             else self._build_session()
 
@@ -145,7 +154,7 @@ class PDFDownloader:
         Files that are already present and look like valid PDFs are skipped
         unless ``force`` is set, so the step can safely be re-run.
         '''
-        source_rows: List[Dict[str, str]] = PDFDownloader.CSV_processor.processed_documents
+        source_rows: List[Dict[str, str]] = self.csv_processor.processed_documents
         total_documents = len(source_rows)
         downloaded_documents = 0
         skipped_documents = 0
@@ -161,10 +170,12 @@ class PDFDownloader:
             print(f"[{position}/{total_documents}] {filename}")
             print(f"    {link}")
 
+            made_request = False
             if not force and self._is_existing_pdf(document_path):
                 print("    Already present and valid, skipping.")
                 skipped_documents += 1
             else:
+                made_request = True
                 succeeded, reason = self._download_with_retry(
                     self.session, link, document_path,
                     PDFDownloader.FALLBACK_URLS.get(filename))
@@ -176,8 +187,10 @@ class PDFDownloader:
                     failed_documents += 1
                     failures.append((filename, link, reason))
 
-            # Stay polite: a short pause between requests, except after the last one.
-            if position < total_documents:
+            # Stay polite: pause only between rows that actually hit the
+            # network, and never after the last one. Skipping a fully
+            # downloaded corpus must cost no sleeping at all.
+            if made_request and position < total_documents:
                 time.sleep(PDFDownloader.INTER_REQUEST_DELAY_SECONDS)
 
         display_summary(total_documents, downloaded_documents,
@@ -193,9 +206,13 @@ class PDFDownloader:
     def _download_with_retry(self, session: requests.Session, url: str,
                              destination: str,
                              fallback_urls: List[str] = None) -> Tuple[bool, str]:
-        '''Attempt a single download, retrying once, then trying any
-        verified fallback sources before giving up.'''
-        reason = 'not attempted'
+        '''Attempt a single download, retrying only transient failures,
+        then trying any verified fallback sources before giving up.
+
+        The first failure reason is kept for the report: with fallbacks in
+        play the last candidate's error would otherwise hide why the live
+        FCA link failed.'''
+        first_reason = 'not attempted'
         candidate_urls = [url] + list(fallback_urls or [])
         for candidate_url in candidate_urls:
             if candidate_url != url:
@@ -205,11 +222,24 @@ class PDFDownloader:
                                                         destination)
                 if succeeded:
                     return True, reason
+                if first_reason == 'not attempted':
+                    first_reason = reason
+                if not self._is_transient_failure(reason):
+                    break
                 if attempt < PDFDownloader.MAX_ATTEMPTS_PER_URL:
                     print(f"    Attempt {attempt} failed ({reason}); "
                           f"retrying once after {PDFDownloader.RETRY_DELAY_SECONDS}s...")
                     time.sleep(PDFDownloader.RETRY_DELAY_SECONDS)
-        return False, reason
+        return False, first_reason
+
+    @staticmethod
+    def _is_transient_failure(reason: str) -> bool:
+        '''Only timeouts, connection problems and server-side 5xx responses
+        deserve a second attempt. A 404 or an HTML landing page will answer
+        identically next time — retrying just burns quota and build time.'''
+        if reason.startswith('request error:'):
+            return True
+        return reason.startswith('HTTP 5')
 
     def _download_once(self, session: requests.Session, url: str,
                        destination: str) -> Tuple[bool, str]:
@@ -220,11 +250,18 @@ class PDFDownloader:
                              timeout=PDFDownloader.REQUEST_TIMEOUT_SECONDS) as response:
                 if response.status_code != 200:
                     return False, f"HTTP {response.status_code}"
+                bytes_written = 0
                 with open(part_path, 'wb') as part_file:
                     for chunk in response.iter_content(chunk_size=65536):
                         if chunk:
                             part_file.write(chunk)
-        except requests.RequestException as exc:
+                            bytes_written += len(chunk)
+                            if bytes_written > PDFDownloader.MAX_DOWNLOAD_BYTES:
+                                return False, (
+                                    f"response exceeds "
+                                    f"{PDFDownloader.MAX_DOWNLOAD_BYTES} byte limit"
+                                )
+        except requests_exceptions.RequestException as exc:
             self._discard_part(part_path)
             return False, f"request error: {exc}"
 
