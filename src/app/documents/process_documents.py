@@ -1,13 +1,19 @@
 from dotenv import load_dotenv
 from .pdf_loader import PDFLoader
 from .document_splitter import DocumentSplitter
+from .pdf_downloader import PDFDownloader
 
 import shutil
 import time
 
 load_dotenv()
 
+def download_source_documents():
+    downloader = PDFDownloader()
+    downloader.download_documents()
+
 def process_source_documents():
+    download_source_documents()
     from .vector_store import vectordb
     documents_loader = PDFLoader()
     documents = documents_loader.load_documents()
