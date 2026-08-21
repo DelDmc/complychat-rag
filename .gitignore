@@ -28,3 +28,8 @@ CLAUDE.md
 
 # Source corpus, downloaded from the public FCA URLs in complyChat_sources.csv
 src/app/documents/files/comply_sources/
+
+# Belt and braces: generated state must be ignored wherever it appears, so a
+# tree created by running Python from the wrong directory can never be staged.
+**/vector_store/
+**/comply_sources/
