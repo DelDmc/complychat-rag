@@ -10,7 +10,7 @@ from pathlib import Path
 # .../src/app/documents — every corpus path hangs off this.
 DOCUMENTS_DIR: Path = Path(__file__).resolve().parent
 
-# Directory the 43 public source PDFs are downloaded into, using the exact
+# Directory the 39 public source PDFs are downloaded into, using the exact
 # ``filename`` recorded in the sources CSV. Read by PDFLoader and PDFDownloader.
 APP_DOCS_DIR: Path = DOCUMENTS_DIR / 'files' / 'comply_sources'
 
