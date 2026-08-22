@@ -33,7 +33,7 @@ first, so the fallback only engages when the live source still fails.
 import argparse
 import os
 import time
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import requests
 from requests import exceptions as requests_exceptions
@@ -64,7 +64,13 @@ class PDFDownloader:
     )
 
     # Verified alternative sources for rows whose live link is unusable from
-    # a programmatic client (SPA shell or WAF challenge). Keyed by filename.
+    # a programmatic client (SPA shell or WAF challenge).
+    #
+    # KEYS TRACK THE CSV `filename` COLUMN. Renaming a filename in
+    # complyChat_sources.csv without renaming the key here silently drops
+    # that row's fallback; swapping two filenames silently points each
+    # fallback at the wrong document, so the file's content and its
+    # citation would disagree with nothing to catch it.
     FALLBACK_URLS: Dict[str, List[str]] = {
         # handbook.fca.org.uk serves an SPA shell for .pdf paths; use the
         # Internet Archive's copies of the genuine PDFs.
@@ -134,7 +140,7 @@ class PDFDownloader:
         ],
     }
 
-    def __init__(self, session: requests.Session = None):
+    def __init__(self, session: Optional[requests.Session] = None):
         self.csv_processor: CSVProcessor = CSVProcessor()
         self.session: requests.Session = session if session is not None \
             else self._build_session()
@@ -166,12 +172,16 @@ class PDFDownloader:
         for position, source_row in enumerate(source_rows, start=1):
             filename = source_row['filename']
             link = source_row['link']
-            document_path = os.path.join(PDFDownloader.APP_DOCS_DIR, filename)
+            # basename() the CSV value before it becomes a path. The column
+            # is trusted, so this is insurance rather than a fix, and it
+            # pairs with the anchoring in paths.py.
+            document_path = os.path.join(PDFDownloader.APP_DOCS_DIR,
+                                         os.path.basename(filename))
             print(f"[{position}/{total_documents}] {filename}")
             print(f"    {link}")
 
             made_request = False
-            if not force and self._is_existing_pdf(document_path):
+            if not force and self._is_pdf_file(document_path):
                 print("    Already present and valid, skipping.")
                 skipped_documents += 1
             else:
@@ -205,7 +215,8 @@ class PDFDownloader:
 
     def _download_with_retry(self, session: requests.Session, url: str,
                              destination: str,
-                             fallback_urls: List[str] = None) -> Tuple[bool, str]:
+                             fallback_urls: Optional[List[str]] = None
+                             ) -> Tuple[bool, str]:
         '''Attempt a single download, retrying only transient failures,
         then trying any verified fallback sources before giving up.
 
@@ -216,6 +227,11 @@ class PDFDownloader:
         candidate_urls = [url] + list(fallback_urls or [])
         for candidate_url in candidate_urls:
             if candidate_url != url:
+                # Space the fallback the way rows are spaced: a row with a
+                # fallback otherwise fires up to four requests back to back.
+                # The delay is politeness towards the FCA and the Internet
+                # Archive, so it belongs here too.
+                time.sleep(PDFDownloader.INTER_REQUEST_DELAY_SECONDS)
                 print(f"    Trying fallback source: {candidate_url}")
             for attempt in range(1, PDFDownloader.MAX_ATTEMPTS_PER_URL + 1):
                 succeeded, reason = self._download_once(session, candidate_url,
@@ -245,6 +261,7 @@ class PDFDownloader:
                        destination: str) -> Tuple[bool, str]:
         '''Stream one URL to a temporary file and keep it only if it is a PDF.'''
         part_path = destination + '.part'
+        oversized = False
         try:
             with session.get(url, stream=True,
                              timeout=PDFDownloader.REQUEST_TIMEOUT_SECONDS) as response:
@@ -257,13 +274,19 @@ class PDFDownloader:
                             part_file.write(chunk)
                             bytes_written += len(chunk)
                             if bytes_written > PDFDownloader.MAX_DOWNLOAD_BYTES:
-                                return False, (
-                                    f"response exceeds "
-                                    f"{PDFDownloader.MAX_DOWNLOAD_BYTES} byte limit"
-                                )
+                                # Break rather than return: the part file is
+                                # still open here, and discarding it must
+                                # happen after the with block closes it.
+                                oversized = True
+                                break
         except requests_exceptions.RequestException as exc:
             self._discard_part(part_path)
             return False, f"request error: {exc}"
+
+        if oversized:
+            self._discard_part(part_path)
+            return False, (f"response exceeds "
+                           f"{PDFDownloader.MAX_DOWNLOAD_BYTES} byte limit")
 
         if not os.path.exists(part_path) or os.path.getsize(part_path) == 0:
             self._discard_part(part_path)
@@ -290,9 +313,6 @@ class PDFDownloader:
             return False
         with open(path, 'rb') as candidate:
             return candidate.read(5) == b'%PDF-'
-
-    def _is_existing_pdf(self, path: str) -> bool:
-        return self._is_pdf_file(path)
 
 
 def display_summary(given, downloaded, skipped, failed):

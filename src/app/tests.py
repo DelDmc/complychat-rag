@@ -194,6 +194,9 @@ class DownloadOnceTests(PDFDownloaderTestBase):
         self.assertFalse(succeeded)
         self.assertIn('byte limit', reason)
         self.assertFalse(os.path.exists(destination))
+        # An abort must leave nothing behind either: the cap exists to bound
+        # damage from a misbehaving host, and a stranded .part does not.
+        self.assertFalse(os.path.exists(destination + '.part'))
 
 
 class DownloadWithRetryTests(PDFDownloaderTestBase):
@@ -289,9 +292,10 @@ class DownloadWithRetryTests(PDFDownloaderTestBase):
         downloader = self._make_downloader(session)
 
         destination = os.path.join(self._tmp_dir.name, 'fallback.pdf')
-        succeeded, reason = downloader._download_with_retry(
-            session, ROW_TWO_LINK, destination,
-            fallback_urls=['http://web.archive.org/fallback-copy'])
+        with mock.patch.object(pdf_downloader.time, 'sleep'):
+            succeeded, reason = downloader._download_with_retry(
+                session, ROW_TWO_LINK, destination,
+                fallback_urls=['http://web.archive.org/fallback-copy'])
 
         self.assertFalse(succeeded)
         self.assertIn('not a PDF', reason)
@@ -358,7 +362,8 @@ class SkipBehaviourTests(PDFDownloaderTestBase):
         self.assertEqual([], session.requested_urls)
         self.assertEqual(2, results['skipped'])
 
-        forced_results = downloader.download_documents(force=True)
+        with mock.patch.object(pdf_downloader.time, 'sleep'):
+            forced_results = downloader.download_documents(force=True)
         self.assertEqual(2, len(session.requested_urls))
         self.assertEqual(0, forced_results['skipped'])
 
@@ -451,6 +456,73 @@ class IngestionGateTests(SimpleTestCase):
 
         self.assertIn('1/2 source documents failed to download',
                       str(caught.exception))
+
+    def _partial_corpus_downloader(self):
+        # One row downloads fine; the other hits an HTML landing page that
+        # no fallback can rescue — the shape of the 4 always-dead CSV rows.
+        session = _StubSession({
+            ROW_ONE_LINK: [_FakeResponse(chunks=_pdf_body())],
+            ROW_TWO_LINK: [_FakeResponse(chunks=_html_body())],
+        })
+        return self._make_downloader(session)
+
+    def test_partial_corpus_is_allowed_when_explicitly_accepted(self):
+        # Task 16: the gate stays shut by default but must be openable on
+        # purpose, or a corpus with permanently dead rows can never be
+        # built at all.
+        downloader = self._partial_corpus_downloader()
+
+        reached_embedding = mock.Mock()
+        reached_embedding.load_documents.return_value = []
+        patches = self._patch_downstream_stages(reached_embedding)
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        with mock.patch.object(process_documents, 'PDFDownloader',
+                               lambda: downloader), \
+               mock.patch.object(process_documents.time, 'sleep'), \
+               mock.patch.object(pdf_downloader.time, 'sleep'):
+            with self.assertLogs(process_documents.logger, 'WARNING') as logged:
+                process_documents.process_source_documents(allow_partial=True)
+
+        # It proceeds, and it says so loudly: a short corpus that embeds
+        # silently is the failure this whole gate exists to prevent.
+        reached_embedding.load_documents.assert_called_once_with()
+        self.assertIn('PARTIAL corpus', logged.output[0])
+        self.assertIn('1/2 source documents failed to download',
+                      logged.output[0])
+
+    def test_env_var_opens_the_gate_without_an_argument(self):
+        # The deploy-time hatch: ALLOW_PARTIAL_CORPUS makes a deliberate
+        # reduced build explicit and greppable instead of a source edit.
+        downloader = self._partial_corpus_downloader()
+
+        reached_embedding = mock.Mock()
+        reached_embedding.load_documents.return_value = []
+        patches = self._patch_downstream_stages(reached_embedding)
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        with mock.patch.dict(os.environ, {'ALLOW_PARTIAL_CORPUS': '1'}), \
+               mock.patch.object(process_documents, 'PDFDownloader',
+                                 lambda: downloader), \
+               mock.patch.object(process_documents.time, 'sleep'), \
+               mock.patch.object(pdf_downloader.time, 'sleep'):
+            with self.assertLogs(process_documents.logger, 'WARNING'):
+                process_documents.process_source_documents()
+
+        reached_embedding.load_documents.assert_called_once_with()
+
+    def test_env_var_values_that_must_not_open_the_gate(self):
+        for value in ('', '0', 'false', 'no', 'maybe'):
+            with self.subTest(value=value):
+                with mock.patch.dict(os.environ,
+                                     {'ALLOW_PARTIAL_CORPUS': value}):
+                    self.assertFalse(process_documents.allow_partial_from_env())
+        with mock.patch.dict(os.environ, {'ALLOW_PARTIAL_CORPUS': 'TRUE '}):
+            self.assertTrue(process_documents.allow_partial_from_env())
 
     def test_complete_corpus_passes_the_gate(self):
         session = _StubSession({
