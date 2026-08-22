@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 from .pdf_loader import PDFLoader
 from .document_splitter import DocumentSplitter
 from .pdf_downloader import PDFDownloader
+from .paths import VECTOR_STORE_DIR
 
 import logging
 import os
@@ -70,7 +71,12 @@ def process_source_documents(allow_partial: Optional[bool] = None):
     print("Chroma database setup completed.")
 
 def clear_vector_store():
-    path_to_vectorstore = "app/documents/vector_store/"
+    # Anchored and re-read immediately before deletion: an unanchored rmtree
+    # would follow whatever directory CWD happens to point at.
+    path_to_vectorstore = VECTOR_STORE_DIR
+    if not path_to_vectorstore.is_dir():
+        print(f"Directory '{path_to_vectorstore}' does not exist; nothing to delete.")
+        return
     try:
         # Use shutil.rmtree to remove the directory and its contents
         shutil.rmtree(path_to_vectorstore)

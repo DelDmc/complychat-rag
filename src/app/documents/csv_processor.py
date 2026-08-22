@@ -1,9 +1,12 @@
 import csv
 from typing import List, Dict
 
+from .paths import DOCUMENTS_DIR
+
 class CSVProcessor:
-    CSV_DIR = 'app/documents/files/complyChat_sources.csv'
-    # CSV_DIR = 'app/documents/files/TEST_source.csv'
+    # Anchored to this module's directory so CWD stops mattering.
+    CSV_DIR = str(DOCUMENTS_DIR / 'files' / 'complyChat_sources.csv')
+    # CSV_DIR = str(DOCUMENTS_DIR / 'files' / 'TEST_source.csv')
 
     def __init__(self):
         self.processed_documents: List[Dict[str, str]] = []
