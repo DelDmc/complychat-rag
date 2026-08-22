@@ -1,5 +1,4 @@
 import csv
-from pathlib import Path
 from typing import List, Dict
 
 from .paths import DOCUMENTS_DIR
