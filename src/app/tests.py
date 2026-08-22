@@ -26,6 +26,7 @@ import requests
 from django.test import SimpleTestCase
 
 from app.documents import pdf_downloader, process_documents
+from app.documents.csv_processor import CSVProcessor
 from app.documents.pdf_downloader import PDFDownloader
 from app.documents.pdf_loader import PDFLoader
 
@@ -712,6 +713,46 @@ class IngestionGateTests(SimpleTestCase):
             process_documents.process_source_documents()
 
 
+class SourcesCsvTests(SimpleTestCase):
+    '''The real CSV must stay fetchable end to end.
+
+    Task 22 dropped the four rows that pointed at HTML landing pages with
+    no archived PDF behind them, so the corpus ships as 39 documents and
+    the ingestion gate passes without an escape hatch. This locks that in:
+    a row added later with a link no client can fetch would otherwise only
+    surface as a RuntimeError during a build.
+    '''
+
+    EXPECTED_DOCUMENT_COUNT = 39
+
+    def setUp(self):
+        super().setUp()
+        self.rows = CSVProcessor().processed_documents
+
+    def test_corpus_is_thirty_nine_documents(self):
+        self.assertEqual(self.EXPECTED_DOCUMENT_COUNT, len(self.rows))
+
+    def test_every_row_is_fetchable(self):
+        # Fetchable means the link is itself a PDF path, or the row has a
+        # verified fallback source recorded against its filename.
+        for row in self.rows:
+            with self.subTest(filename=row['filename']):
+                link_is_pdf = row['link'].lower().split('?')[0].endswith('.pdf')
+                has_fallback = row['filename'] in PDFDownloader.FALLBACK_URLS
+                self.assertTrue(
+                    link_is_pdf or has_fallback,
+                    f"{row['filename']} has neither a PDF link nor a fallback; "
+                    f"it would fail every build")
+
+    def test_every_fallback_key_matches_a_row(self):
+        # The coupling noted above FALLBACK_URLS: a key that matches no
+        # filename is a fallback that can never engage.
+        filenames = {row['filename'] for row in self.rows}
+        for key in PDFDownloader.FALLBACK_URLS:
+            with self.subTest(key=key):
+                self.assertIn(key, filenames)
+
+
 class DisplaySummaryTests(PDFDownloaderTestBase):
     '''The summary table renders its counts.'''
 
@@ -719,7 +760,7 @@ class DisplaySummaryTests(PDFDownloaderTestBase):
         from app.documents.pdf_downloader import display_summary
         output = StringIO()
         with mock.patch('sys.stdout', output):
-            display_summary(43, 39, 0, 4)
+            display_summary(39, 36, 2, 1)
         rendered = output.getvalue()
         self.assertIn('Total', rendered)
         self.assertIn('Downloaded', rendered)
