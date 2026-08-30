@@ -19,11 +19,10 @@ SECRET_KEY =  os.environ.get('SECRET_KEY')
 IS_HEROKU_APP = "DYNO" in os.environ and not "CI" in os.environ
 
 # SECURITY WARNING: don't run with debug turned on in production!
-if not IS_HEROKU_APP:
-    DEBUG = True
-
-# SECURITY WARNING: don't run with debug turned on in production!
-# DEBUG = int(os.environ.get('DEBUG', default=0))
+# Read DEBUG from the environment and default to OFF. A host that forgets to
+# set it then fails safe, instead of serving tracebacks and settings to the
+# public. Set DEBUG=1 in src/.env for local development.
+DEBUG = os.environ.get("DEBUG", "0").strip().lower() in ("1", "true", "yes", "on")
 
 ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS").split(', ')
 # On Heroku, it's safe to use a wildcard for `ALLOWED_HOSTS``, since the Heroku router performs
