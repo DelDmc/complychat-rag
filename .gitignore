@@ -33,3 +33,7 @@ src/app/documents/files/comply_sources/
 # tree created by running Python from the wrong directory can never be staged.
 **/vector_store/
 **/comply_sources/
+
+# collectstatic output. Written into STATIC_ROOT (src/staticfiles) by the
+# image build, and by any local run of the command — build output, never source.
+**/staticfiles/
