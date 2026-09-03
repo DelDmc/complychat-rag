@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ComplyChat</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0 auto;
+      padding: 3rem 1.25rem;
+      max-width: 42rem;
+      font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    }
+    h1 { margin: 0 0 0.25rem; font-size: 1.6rem; }
+    .sub { margin: 0 0 2rem; opacity: 0.7; }
+    .notice {
+      padding: 1rem 1.25rem;
+      border-left: 3px solid currentColor;
+      opacity: 0.85;
+    }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  </style>
+</head>
+<body>
+  <h1>ComplyChat</h1>
+  <p class="sub">Document-grounded question answering over UK and EU financial regulation.</p>
+
+  <div class="notice">
+    <p><strong>The corpus is still being built.</strong> This page is the deployment
+    skeleton — the service boots and serves, but it cannot answer questions until the
+    39 source documents have been fetched and indexed.</p>
+    <p>The endpoint is <code>POST /api/send-message/</code>.</p>
+  </div>
+</body>
+</html>

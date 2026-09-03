@@ -1,28 +1,21 @@
 """
-URL configuration for config project.
+URL configuration for the ComplyChat project.
 
-The `urlpatterns` list routes URLs to views. For more information please see:
-    https://docs.djangoproject.com/en/4.2/topics/http/urls/
-Examples:
-Function views
-    1. Add an import:  from my_app import views
-    2. Add a URL to urlpatterns:  path('', views.home, name='home')
-Class-based views
-    1. Add an import:  from other_app.views import Home
-    2. Add a URL to urlpatterns:  path('', Home.as_view(), name='home')
-Including another URLconf
-    1. Import the include() function: from django.urls import include, path
-    2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
+    /           the page a visitor lands on
+    /healthz    liveness probe — deliberately touches nothing but the process
+    /api/       the question-answering endpoint
+
+The DRF DefaultRouter that used to sit here had no viewsets registered, but a
+DefaultRouter always claims '^$' for its api-root view. Since it came first in
+urlpatterns it would have shadowed the '' route below, and the landing page
+would have silently served an empty API root instead.
 """
-from django.contrib import admin
 from django.urls import path, include
-from rest_framework import routers
-from rest_framework.authtoken.views import obtain_auth_token
 
-router = routers.DefaultRouter()
-urlpatterns = router.urls
+from app.views import healthz, index
 
-urlpatterns += [
-    # path('admin/', admin.site.urls),
+urlpatterns = [
+    path('', index, name='index'),
+    path('healthz', healthz, name='healthz'),
     path('api/', include('app.urls')),
 ]

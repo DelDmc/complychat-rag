@@ -1,3 +1,0 @@
-web: gunicorn config.wsgi:application -c gunicorn_config.py
-worker: python manage.py celery worker --loglevel=info
-heroku ps:scale web=2

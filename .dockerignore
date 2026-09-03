@@ -1,0 +1,58 @@
+# Docker does not read .gitignore. Everything below would otherwise be shipped
+# in the build context — and `fly deploy` builds on a REMOTE builder, so the
+# context leaves this machine even when nothing COPYs it into the image.
+#
+# Patterns here are anchored to the context root unless they start with `**/`.
+# `*.md` would match ./CLAUDE.md but not ./.ipynb_checkpoints/CLAUDE-checkpoint.md;
+# every "anywhere" rule below is written with the prefix for that reason.
+
+# --- Secrets ---------------------------------------------------------------
+# src/.env holds the live OPENAI_API_KEY and LLM_API_KEY. It is gitignored, so
+# it never reaches GitHub, but an image is a different distribution channel:
+# anyone who pulls it could read /app/.env.
+#
+# It is also a correctness problem. settings.py calls load_dotenv() at import,
+# before it reads DEBUG, and find_dotenv() would walk straight into a baked
+# /app/.env. load_dotenv() does not override variables already set, so an
+# explicit Fly secret still wins — but any variable NOT set on the host would
+# come from the baked file instead of the safe code default, reinstating the
+# production-DEBUG failure that was fixed in PR #7.
+**/.env
+**/.env.*
+# A committed example file is documentation, not a secret: keep it available
+# so the README can point at it. This exception must stay below the rule it
+# undoes — the last matching pattern wins.
+!**/.env.example
+
+# --- Local state, not build output -----------------------------------------
+# A stale Chroma tree from local runs, and the downloaded PDFs. Neither is the
+# real corpus. Note that the Dockerfile does not yet download or index
+# anything, so the image currently ships with an empty Chroma and retrieves
+# nothing — the ingestion step is a later piece of work.
+**/vector_store/
+**/comply_sources/
+
+# --- Notes and instructions ------------------------------------------------
+# CLAUDE.md names the client. It must not travel in a build context any more
+# than it travels in the repository — and neither must the checkpoint copy of
+# it that .ipynb_checkpoints/ keeps.
+**/*.md
+.claude/
+.ipynb_checkpoints/
+.rtk/
+working_docs/
+
+# --- Noise -----------------------------------------------------------------
+**/__pycache__/
+**/*.py[cod]
+**/*.sqlite3
+**/staticfiles/
+
+.git/
+.gitignore
+.github/
+.venv/
+venv/
+
+Dockerfile
+.dockerignore

@@ -13,26 +13,35 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY =  os.environ.get('SECRET_KEY')
 
-# The `DYNO` env var is set on Heroku CI, but it's not a real Heroku app, so we have to
-# also explicitly exclude CI:
-# https://devcenter.heroku.com/articles/heroku-ci#immutable-environment-variables
-IS_HEROKU_APP = "DYNO" in os.environ and not "CI" in os.environ
-
 # SECURITY WARNING: don't run with debug turned on in production!
 # Read DEBUG from the environment and default to OFF. A host that forgets to
 # set it then fails safe, instead of serving tracebacks and settings to the
 # public. Set DEBUG=1 in src/.env for local development.
 DEBUG = os.environ.get("DEBUG", "0").strip().lower() in ("1", "true", "yes", "on")
 
-ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS").split(', ')
-# On Heroku, it's safe to use a wildcard for `ALLOWED_HOSTS``, since the Heroku router performs
-# validation of the Host header in the incoming HTTP request. On other platforms you may need
-# to list the expected hostnames explicitly to prevent HTTP Host header attacks. See:
-# https://docs.djangoproject.com/en/4.2/ref/settings/#std-setting-ALLOWED_HOSTS
-# if IS_HEROKU_APP:
-#     ALLOWED_HOSTS = ["*"]
-# else:
-#     ALLOWED_HOSTS = []
+# Comma-separated list of hostnames, e.g. "complychat.fly.dev, localhost".
+# An unset variable must not crash boot: os.environ.get() returns None and
+# None.split() raises AttributeError, which is an opaque way to fail on a
+# fresh host. Default to the local hostnames instead. Whitespace around the
+# commas is tolerated, so neither "a,b" nor "a, b" is a trap.
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+    if host.strip()
+]
+
+# Fly terminates TLS at its edge and forwards over HTTP, so Django needs the
+# forwarded header to know the original request was secure. Without this,
+# CSRF rejects same-origin POSTs from the page over HTTPS.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# Django 4.x checks Origin against this list for HTTPS POSTs. Derived from
+# ALLOWED_HOSTS so there is one variable to set, not two.
+CSRF_TRUSTED_ORIGINS = [
+    f"https://{host}"
+    for host in ALLOWED_HOSTS
+    if host not in ("localhost", "127.0.0.1", "*")
+]
 
 # Application definition
 
@@ -128,6 +137,14 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 
 STATIC_URL = 'static/'
+
+# Whitenoise is already in MIDDLEWARE, but it serves from STATIC_ROOT, which
+# has to exist for `collectstatic` to have somewhere to write during the image
+# build. Compressed, but not the manifest storage: manifest hashing turns a
+# reference to a missing asset into a 500 at runtime, which is a poor trade on
+# a page whose CSS and JS are inline.
+STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
