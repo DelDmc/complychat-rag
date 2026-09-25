@@ -8,7 +8,7 @@ Built in 2023 as a prototype, and used by consultants at a regulatory-compliance
 
 ## Status
 
-**Runs locally. Not deployed.** There is no hosted demo yet. Deployment, and a minimal web page in front of the API, are the next pieces of work. Everything described below runs on a clean checkout.
+**Deployed at [complychat.fly.dev](https://complychat.fly.dev/)**, on Fly.io, with the full 39-document index built into the image. The API answers at `POST https://complychat.fly.dev/api/send-message/`. The page at `/` is a placeholder; a chat interface in front of the API is the next piece of work. Everything described below also runs on a clean checkout.
 
 ## What it does
 
@@ -140,6 +140,20 @@ python manage.py runserver                                    # development
 gunicorn -c gunicorn_config.py config.wsgi:application        # as configured for deploy
 ```
 
+## Deploying
+
+The app runs on Fly.io as `complychat`; `fly.toml` explains each of its settings. The corpus is built into the image: the Docker build downloads the 39 documents, embeds them and persists Chroma, so a machine starts with the full index and never fetches or embeds anything at runtime.
+
+The OpenAI key is needed twice: at build time for the embeddings, and at runtime for the chat model. The build gets it as a BuildKit secret, which is mounted for the one step that needs it and never written to an image layer.
+
+```bash
+read -rs OPENAI_API_KEY && export OPENAI_API_KEY               # keeps the key out of shell history
+fly secrets set OPENAI_API_KEY="$OPENAI_API_KEY" --stage       # runtime; goes live with the deploy below
+fly deploy --build-secret OPENAI_API_KEY="$OPENAI_API_KEY"     # build time
+```
+
+The ingestion step sits in its own layer, built from `src/app/documents/` alone, so the builder's cache reuses it until the pipeline, the sources CSV or the requirements change. An ordinary code deploy does not re-download the corpus or pay for the embeddings again. The partial-corpus gate applies in the build too: a document that fails to download fails the deploy, and `--build-arg ALLOW_PARTIAL_CORPUS=1` is the deliberate override.
+
 ## Testing
 
 ```bash
@@ -147,7 +161,7 @@ cd src
 python manage.py test app
 ```
 
-**27 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no API key and no test database — HTTP is stubbed at the session boundary and the PDF loader is patched out. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, and the sources CSV itself.
+**29 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, and what the API returns to a caller when something fails.
 
 The citation tests were checked against the pre-fix loader as well as the fixed one. Drop the old `pdf_loader.py` into a throwaway copy of the tree and the same suite reports `FAILED (failures=2, errors=1)`, with the positional shift visible in the assertion — `'Consultation paper' != 'Unreadable guidance'`. A test that passes against both versions proves nothing.
 
@@ -161,12 +175,14 @@ The citation tests were checked against the pre-fix loader as well as the fixed 
 
 **`DEBUG` defaulted to `True`.** Settings never read `DEBUG` from the environment; the line was commented out, and the remaining branch set `DEBUG = True` whenever a Heroku-specific variable was absent. On any non-Heroku host that means Django tracebacks and settings served to the public on any error, and setting `DEBUG=0` in the host's config would have been silently ignored. Caught in a pre-deployment review, before anything was ever exposed. **Fixed:** `DEBUG` is now read from the environment and defaults to off, so a host that forgets to set it fails safe rather than fails open.
 
+**A 500 that quoted the API key.** On any failure, the endpoint returned `str(e)` to the caller. On the first deploy the key was still a placeholder, and OpenAI's rejection of it came back verbatim in a public response, including the masked key. With a real key, that is its first few and last four characters. **Fixed:** the caller gets a fixed message and the exception goes to the server log. A test feeds the view an OpenAI-shaped authentication error and checks the key does not come back; against the old view it fails on exactly that assertion. The same change stopped invalid requests falling through into the model call and returning a 500; they now get a 400 with the validation errors.
+
 **A trailing slash that costs 404s.** The plan is to move chat inference to Gemini's OpenAI-compatible endpoint, keeping OpenAI for embeddings. That was de-risked before committing to it, and the 2023 SDK does drive the endpoint — but only after stripping the trailing slash from the base URL. `openai==0.27.8` builds its URL by plain string concatenation, so the base URL exactly as documented produces `.../openai//chat/completions` and a 404. The client retries for about 30 seconds and surfaces `APIError: HTTP code 404 from API ()` with an empty message, which points at nothing. Worth writing down: the fix belongs in code as `.rstrip('/')`, not in a `.env` file, because the next person to copy the URL from the documentation will reintroduce it.
 
 ## What I would do differently
 
 - **Retrieval evaluation.** There is none. A question set with known-correct source documents, scored on whether the right one is retrieved, is the first thing a serious team would ask for, and it is the honest gap here.
-- **Structured logging instead of `print`.** Error handling still prints, and still returns the raw exception string to the client.
+- **Structured logging instead of `print`.** The API's error path now logs, but the ingestion pipeline still reports with `print`, and there is no logging configuration beyond Python's defaults.
 - **Tests from the start.** The suite was written years after the code. Writing the citation test first would have caught the position-matching bug before it ever shipped.
 
 ## Project layout
@@ -181,7 +197,7 @@ src/
     ├── views.py                POST /api/send-message/
     ├── serializers.py          request validation
     ├── retrieval_chain.py      ConversationalRetrievalChain, condenser, citations
-    ├── tests.py                27 tests
+    ├── tests.py                29 tests
     └── documents/              the ingestion pipeline
         ├── paths.py            all corpus paths, anchored to this module
         ├── csv_processor.py    reads complyChat_sources.csv
