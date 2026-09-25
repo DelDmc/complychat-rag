@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # Python 3.10, not something newer: the requirements are pinned to the 2023
 # stack (langchain 0.0.300, openai 0.27.8, chromadb 0.4.3) and chroma-hnswlib
 # 0.7.1 has no wheels for 3.12.
@@ -23,6 +25,35 @@ WORKDIR /app
 COPY src/requirements.txt ./requirements.txt
 RUN pip install -r requirements.txt
 
+# Build the corpus into the image: download the 39 source PDFs, embed them,
+# and persist Chroma under app/documents/vector_store. Only the ingestion
+# package is copied at this point, so this layer (and the embedding spend) is
+# rebuilt when the pipeline or the sources CSV changes, not on every edit to a
+# view or template.
+#
+# The key arrives as a BuildKit secret: mounted for this one RUN, never
+# written to a layer or the image history. Pass it with
+#   fly deploy --build-secret OPENAI_API_KEY=...
+# required=true turns a forgotten flag into a clear "secret not found" error
+# instead of an embedding failure halfway through.
+#
+# The ingestion gate still applies: if any document fails to download, the
+# build fails rather than shipping a short index. ALLOW_PARTIAL_CORPUS=1, as
+# a --build-arg, is the deliberate override.
+#
+# The PDFs are deleted in the same RUN. Answers link to the publishers' own
+# URLs, so nothing at runtime reads them, and removing them in a later layer
+# would not shrink the image.
+COPY src/app/__init__.py ./app/__init__.py
+COPY src/app/documents/ ./app/documents/
+ARG ALLOW_PARTIAL_CORPUS=
+RUN --mount=type=secret,id=OPENAI_API_KEY,required=true \
+    OPENAI_API_KEY="$(cat /run/secrets/OPENAI_API_KEY)" \
+    python -m app.documents.data_utils process_source_documents \
+    && rm -rf app/documents/files/comply_sources
+
+# .dockerignore keeps any local vector_store out of the context, so this
+# cannot overwrite the index built above.
 COPY src/ ./
 
 # Whitenoise serves from STATIC_ROOT, which only exists once collectstatic has

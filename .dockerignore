@@ -26,9 +26,8 @@
 
 # --- Local state, not build output -----------------------------------------
 # A stale Chroma tree from local runs, and the downloaded PDFs. Neither is the
-# real corpus. Note that the Dockerfile does not yet download or index
-# anything, so the image currently ships with an empty Chroma and retrieves
-# nothing — the ingestion step is a later piece of work.
+# real corpus: the Dockerfile downloads and indexes the corpus itself, and a
+# local vector_store in the context would be copied over the index it built.
 **/vector_store/
 **/comply_sources/
 
