@@ -39,6 +39,8 @@ Follow-up questions work. The chain rewrites *"and what about crypto?"* into a s
 
 The temperature is sent per request, between 0 and 1. The model and the condensing prompt are fixed on the server, because the endpoint needs no login and every call is paid for with the deployment's key: a caller who could choose the model could pick the most expensive one, and a caller who could write the prompt could have it do anything at all. An `llm_model` or `full_prompt` sent by an older client is ignored rather than rejected.
 
+The caller still writes every word the model reads, so that is bounded too. A question, and each `human` turn in the history, can be up to 2,000 characters, and each `ai` turn up to 8,000; anything longer gets a `400`. Of the history, only the most recent turns that fit in 12,000 characters (about 3k tokens) reach the model, which is always enough for the latest exchange.
+
 Each caller gets 5 answers a minute and 50 a day, counted by IP address, with IPv6 counted per /64 because one client is typically handed a whole /64. Past either limit the endpoint answers `429` with a `Retry-After` header and the model is never called. Behind Fly's proxy the caller's address comes from the `Fly-Client-IP` header, which Fly sets itself; `CLIENT_IP_HEADER` in `fly.toml` is what tells the app to trust it, so the same image run anywhere else does not take a caller's word for their own address.
 
 ## The corpus
@@ -154,16 +156,16 @@ fly secrets set OPENAI_API_KEY="$OPENAI_API_KEY" --stage       # runtime; goes l
 fly deploy --build-secret OPENAI_API_KEY="$OPENAI_API_KEY"     # build time
 ```
 
-The ingestion step sits in its own layer, built from `src/app/documents/` alone, so the builder's cache reuses it until the pipeline, the sources CSV or the requirements change. An ordinary code deploy does not re-download the corpus or pay for the embeddings again. The partial-corpus gate applies in the build too: a document that fails to download fails the deploy, and `--build-arg ALLOW_PARTIAL_CORPUS=1` is the deliberate override.
+The ingestion step sits in its own layer, built from `src/app/documents/` alone, so the builder's cache can reuse it until the pipeline, the sources CSV or the requirements change, and an ordinary code deploy then skips the download and the embeddings. Only a successful build is cached, though, and Fly does not keep a builder's cache forever. Pass the build secret on every deploy, and expect any deploy to rebuild the index. The partial-corpus gate applies in the build too: a document that fails to download fails the deploy, and `--build-arg ALLOW_PARTIAL_CORPUS=1` is the deliberate override.
 
 ## Testing
 
 ```bash
 cd src
-python manage.py test app
+python manage.py test app       # needs SECRET_KEY and OPENAI_API_KEY set; src/.env above does it
 ```
 
-**35 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, what the API returns to a caller when something fails, that a caller cannot choose the model or the prompt, and the rate limits: that each one refuses before the model is called, that one caller's limit does not hold up another, and that a caller cannot reset their limit with a forged header.
+**39 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no real API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. Both variables can hold any value, but they must be set: the app builds the chain at startup and the embeddings client will not construct without a key, and the endpoint tests go through middleware that signs with `SECRET_KEY`. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, what the API returns to a caller when something fails, that a caller cannot choose the model or the prompt, the input-size caps and the history budget, and the rate limits: that each one refuses before the model is called, that one caller's limit does not hold up another, and that a caller cannot reset their limit with a forged header.
 
 The citation tests were checked against the pre-fix loader as well as the fixed one. Drop the old `pdf_loader.py` into a throwaway copy of the tree and the same suite reports `FAILED (failures=2, errors=1)`, with the positional shift visible in the assertion — `'Consultation paper' != 'Unreadable guidance'`. A test that passes against both versions proves nothing.
 
@@ -200,7 +202,7 @@ src/
     ├── serializers.py          request validation
     ├── throttling.py           per-caller rate limits
     ├── retrieval_chain.py      ConversationalRetrievalChain, condenser, citations
-    ├── tests.py                35 tests
+    ├── tests.py                39 tests
     └── documents/              the ingestion pipeline
         ├── paths.py            all corpus paths, anchored to this module
         ├── csv_processor.py    reads complyChat_sources.csv

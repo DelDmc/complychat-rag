@@ -1,8 +1,9 @@
 '''Per-client rate limits for POST /api/send-message/.
 
 The endpoint needs no login, and every question it answers is paid for with
-the deployment's OpenAI key. Fixing the model and the prompt on the server
-caps what one call can cost; these limits cap how many calls one client gets.
+the deployment's OpenAI key. The fixed model and prompt, the length caps in
+serializers.py and the history budget in retrieval_chain.py bound what one
+call can cost; these limits cap how many calls one client gets.
 
 Clients are told apart by IP address, which takes two decisions:
 

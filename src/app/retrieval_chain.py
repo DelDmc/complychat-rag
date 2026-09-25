@@ -6,7 +6,29 @@ from app.documents.vector_store import vectordb
 
 load_dotenv()
 
-        
+# The condensing call sees the chat history, and the caller writes all of it,
+# the `ai` turns included. Ten maximum-length turns would fill the model's
+# context window on every call. Only the most recent turns that fit in this
+# budget are kept, about 3k tokens; a follow-up rarely needs more than the
+# last exchange or two. It is larger than one maximum-length pair
+# (serializers.QUESTION_MAX_CHARS + ANSWER_MAX_CHARS), so the newest turn
+# always survives.
+HISTORY_MAX_PAIRS = 10
+HISTORY_MAX_CHARS = 12000
+
+
+def recent_history(chat_history, max_pairs=HISTORY_MAX_PAIRS, max_chars=HISTORY_MAX_CHARS):
+    '''The most recent (human, ai) pairs that fit in max_chars, oldest first.'''
+    kept = []
+    total = 0
+    for human, ai in reversed(chat_history[-max_pairs:]):
+        total += len(human) + len(ai)
+        if total > max_chars:
+            break
+        kept.append((human, ai))
+    return kept[::-1]
+
+
 class Chat:
     prompt_template: str = "Given the following chat_history and a follow up question, summirize the chat_history and combine with the follow up question to be a standalone question, in its original language. NEVER EVER say that as AI you don't have the ability to recall previous discussions. \n\nChat History:\n{chat_history}\nFollow Up Input: {question}\nStandalone question:"
     llm_model: str = 'gpt-4'
@@ -29,7 +51,7 @@ class Chat:
         question_generator = LLMChain(prompt=prompt, llm=ChatOpenAI(model_name=self.llm_model, temperature=self.llm_temperature))
         
         chain.question_generator = question_generator
-        chat_history = chat_history[-10:] if len(chat_history) > 10 else chat_history
+        chat_history = recent_history(chat_history)
         
         result = chain({"question":question, "chat_history": chat_history})
 

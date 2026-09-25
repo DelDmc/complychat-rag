@@ -966,3 +966,58 @@ class SendMessageRateLimitTests(SendMessageTestBase):
         # The same IPv4 client, reached over an IPv6 socket.
         self.assertEqual(rate_limit_key('203.0.113.7'),
                          rate_limit_key('::ffff:203.0.113.7'))
+
+
+class SendMessageInputSizeTests(SendMessageTestBase):
+    '''What one call can send to the model is bounded.
+
+    With the model and the prompt fixed, the rest of a call's cost is the
+    text the caller sends, and the caller writes every part of it: the
+    question and both sides of the chat history.
+    '''
+
+    def test_overlong_question_or_message_is_a_400_before_the_chain(self):
+        from app.serializers import ANSWER_MAX_CHARS, QUESTION_MAX_CHARS
+        too_long = (
+            ('question', dict(self.VALID_PAYLOAD, question='q' * (QUESTION_MAX_CHARS + 1))),
+            ('human', dict(self.VALID_PAYLOAD, chat_history=[
+                {'human': 'h' * (QUESTION_MAX_CHARS + 1), 'ai': 'An answer.'}])),
+            ('ai', dict(self.VALID_PAYLOAD, chat_history=[
+                {'human': 'A question.', 'ai': 'a' * (ANSWER_MAX_CHARS + 1)}])),
+        )
+        for field, payload in too_long:
+            with self.subTest(field=field):
+                chat = mock.Mock()
+                self._patch_chat(chat)
+
+                response = self._post(payload)
+
+                self.assertEqual(400, response.status_code)
+                self.assertIn(field, response.content.decode())
+                chat.get_answer.assert_not_called()
+
+
+class RecentHistoryTests(SimpleTestCase):
+    '''Only the most recent history that fits the budget reaches the model.'''
+
+    def test_keeps_the_newest_pairs_that_fit_in_order(self):
+        from app.retrieval_chain import recent_history
+        history = [('q1', 'a' * 50), ('q2', 'a' * 50), ('q3', 'a' * 50)]
+
+        # Each pair is 52 characters: the newest two fit in 110, not all three.
+        self.assertEqual(history[1:], recent_history(history, max_chars=110))
+
+    def test_keeps_at_most_max_pairs(self):
+        from app.retrieval_chain import recent_history
+        history = [(f'q{i}', f'a{i}') for i in range(15)]
+
+        self.assertEqual(history[-10:], recent_history(history))
+
+    def test_newest_pair_always_fits(self):
+        '''A follow-up to the longest answer the API accepts keeps its context.'''
+        from app.retrieval_chain import HISTORY_MAX_CHARS, recent_history
+        from app.serializers import ANSWER_MAX_CHARS, QUESTION_MAX_CHARS
+        longest = ('q' * QUESTION_MAX_CHARS, 'a' * ANSWER_MAX_CHARS)
+
+        self.assertLessEqual(QUESTION_MAX_CHARS + ANSWER_MAX_CHARS, HISTORY_MAX_CHARS)
+        self.assertEqual([longest], recent_history([longest, longest]))
