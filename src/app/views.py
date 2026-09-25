@@ -45,8 +45,6 @@ def send_message(request):
 
     try:
         chat = AppConfig.chat
-        chat.prompt_template = config['full_prompt']
-        chat.llm_model = config['llm_model']
         chat.llm_temperature = config['llm_temperature']
         response = chat.get_answer(question, processed_chat_history)
         return Response(response, status=status.HTTP_200_OK)

@@ -6,8 +6,12 @@ class MessageSerializer(serializers.Serializer):
     ai = serializers.CharField(allow_blank=True)
     
 class ChatConfigSerializer(serializers.Serializer):
-    full_prompt = serializers.CharField(max_length=10240)  # 2.5*4096 tokens assuming 1 token = 4-6 chars
-    llm_model = serializers.CharField(max_length=64)
+    # No llm_model and no full_prompt: both are fixed on the server
+    # (Chat.llm_model, Chat.prompt_template), because the caller is anonymous
+    # and the key is ours. A caller-supplied prompt made the endpoint a
+    # general-purpose GPT-4 proxy, at up to 10KB of input per call. A client
+    # that still sends either is not rejected; DRF drops undeclared fields, so
+    # they have no effect.
     llm_temperature = serializers.FloatField(min_value=0.0, max_value=1.0)
     
 class ChatInputSerializer(serializers.Serializer):

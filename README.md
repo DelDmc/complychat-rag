@@ -18,7 +18,7 @@ One POST endpoint, `POST /api/send-message/`. You send a question and the conver
 {
   "question": "What does the Consumer Duty require?",
   "chat_history": [{"human": "...", "ai": "..."}],
-  "config": {"full_prompt": "...", "llm_model": "gpt-4", "llm_temperature": 0.1}
+  "config": {"llm_temperature": 0.1}
 }
 ```
 
@@ -37,7 +37,7 @@ The answer payload:
 
 Follow-up questions work. The chain rewrites *"and what about crypto?"* into a standalone question before retrieval, using a custom condensing prompt in place of LangChain's default. Retrieval is only as good as the question it is given, so condensing is where a conversational RAG system quietly succeeds or fails.
 
-The prompt, model and temperature are sent per request rather than baked in, so the wording could be retuned without a redeploy.
+The temperature is sent per request, between 0 and 1. The model and the condensing prompt are fixed on the server, because the endpoint needs no login and every call is paid for with the deployment's key: a caller who could choose the model could pick the most expensive one, and a caller who could write the prompt could have it do anything at all. An `llm_model` or `full_prompt` sent by an older client is ignored rather than rejected.
 
 ## The corpus
 
@@ -161,7 +161,7 @@ cd src
 python manage.py test app
 ```
 
-**29 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, and what the API returns to a caller when something fails.
+**31 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, what the API returns to a caller when something fails, and that a caller cannot choose the model or the prompt.
 
 The citation tests were checked against the pre-fix loader as well as the fixed one. Drop the old `pdf_loader.py` into a throwaway copy of the tree and the same suite reports `FAILED (failures=2, errors=1)`, with the positional shift visible in the assertion — `'Consultation paper' != 'Unreadable guidance'`. A test that passes against both versions proves nothing.
 
@@ -197,7 +197,7 @@ src/
     ├── views.py                POST /api/send-message/
     ├── serializers.py          request validation
     ├── retrieval_chain.py      ConversationalRetrievalChain, condenser, citations
-    ├── tests.py                29 tests
+    ├── tests.py                31 tests
     └── documents/              the ingestion pipeline
         ├── paths.py            all corpus paths, anchored to this module
         ├── csv_processor.py    reads complyChat_sources.csv
