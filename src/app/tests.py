@@ -765,3 +765,72 @@ class DisplaySummaryTests(PDFDownloaderTestBase):
         self.assertIn('Total', rendered)
         self.assertIn('Downloaded', rendered)
         self.assertIn('Fail', rendered)
+
+
+# ---------------------------------------------------------------------------
+# The public endpoint: what a caller is allowed to see when something fails.
+# ---------------------------------------------------------------------------
+
+class SendMessageErrorTests(SimpleTestCase):
+    '''send_message must never hand an upstream exception to the caller.
+
+    It used to return str(e). OpenAI's authentication error quotes part of
+    the key it rejected, so a public 500 became a way to read the deployed
+    key's first few and last four characters.
+    '''
+
+    URL = '/api/send-message/'
+
+    # The shape of openai 0.27's AuthenticationError message.
+    UPSTREAM_MESSAGE = ('Incorrect API key provided: sk-proj-AbCd********WxYz. '
+                        'You can find your API key at '
+                        'https://platform.openai.com/account/api-keys.')
+
+    VALID_PAYLOAD = {
+        'question': 'What does the Consumer Duty require?',
+        'chat_history': [],
+        'config': {'full_prompt': '{chat_history} {question}',
+                   'llm_model': 'gpt-4', 'llm_temperature': 0.1},
+    }
+
+    def _post(self, payload):
+        import json
+        return self.client.post(self.URL, data=json.dumps(payload),
+                                content_type='application/json')
+
+    def _patch_chat(self, chat):
+        from app.apps import AppConfig
+        patcher = mock.patch.object(AppConfig, 'chat', chat)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_upstream_error_is_logged_not_returned(self):
+        from app.views import GENERIC_ERROR
+        chat = mock.Mock()
+        chat.get_answer.side_effect = Exception(self.UPSTREAM_MESSAGE)
+        self._patch_chat(chat)
+
+        with self.assertLogs('app.views', level='ERROR') as logs:
+            response = self._post(self.VALID_PAYLOAD)
+            # Checked inside the block so that a leak is reported as a leak,
+            # not masked by the missing log line that accompanies it.
+            body = response.content.decode()
+            self.assertNotIn('sk-', body)
+            self.assertNotIn('WxYz', body)
+
+        self.assertEqual(500, response.status_code)
+        self.assertIn(GENERIC_ERROR, body)
+        # The detail is not thrown away; it goes to the server log instead.
+        self.assertIn(self.UPSTREAM_MESSAGE, '\n'.join(logs.output))
+
+    def test_invalid_request_is_a_400_and_never_reaches_the_chain(self):
+        chat = mock.Mock()
+        self._patch_chat(chat)
+        payload = dict(self.VALID_PAYLOAD)
+        del payload['question']
+
+        response = self._post(payload)
+
+        self.assertEqual(400, response.status_code)
+        self.assertIn('question', response.content.decode())
+        chat.get_answer.assert_not_called()
