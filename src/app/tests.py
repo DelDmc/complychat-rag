@@ -23,12 +23,14 @@ from unittest import mock
 from unittest.mock import patch
 
 import requests
-from django.test import SimpleTestCase
+from django.core.cache import cache
+from django.test import SimpleTestCase, override_settings
 
 from app.documents import pdf_downloader, process_documents
 from app.documents.csv_processor import CSVProcessor
 from app.documents.pdf_downloader import PDFDownloader
 from app.documents.pdf_loader import PDFLoader
+from app.throttling import ClientRateThrottle, rate_limit_key
 
 
 # ---------------------------------------------------------------------------
@@ -768,23 +770,17 @@ class DisplaySummaryTests(PDFDownloaderTestBase):
 
 
 # ---------------------------------------------------------------------------
-# The public endpoint: what a caller is allowed to see when something fails.
+# The public endpoint: what a caller can see, choose, and spend.
 # ---------------------------------------------------------------------------
 
-class SendMessageErrorTests(SimpleTestCase):
-    '''send_message must never hand an upstream exception to the caller.
-
-    It used to return str(e). OpenAI's authentication error quotes part of
-    the key it rejected, so a public 500 became a way to read the deployed
-    key's first few and last four characters.
-    '''
+# Settings keep the rate-limit counts in a file cache, where one test run's
+# requests would still count against the next. The endpoint tests each start
+# from an empty cache in memory instead.
+@override_settings(CACHES={'default': {
+    'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
+class SendMessageTestBase(SimpleTestCase):
 
     URL = '/api/send-message/'
-
-    # The shape of openai 0.27's AuthenticationError message.
-    UPSTREAM_MESSAGE = ('Incorrect API key provided: sk-proj-AbCd********WxYz. '
-                        'You can find your API key at '
-                        'https://platform.openai.com/account/api-keys.')
 
     VALID_PAYLOAD = {
         'question': 'What does the Consumer Duty require?',
@@ -792,16 +788,33 @@ class SendMessageErrorTests(SimpleTestCase):
         'config': {'llm_temperature': 0.1},
     }
 
-    def _post(self, payload):
+    def setUp(self):
+        cache.clear()
+
+    def _post(self, payload, **meta):
         import json
         return self.client.post(self.URL, data=json.dumps(payload),
-                                content_type='application/json')
+                                content_type='application/json', **meta)
 
     def _patch_chat(self, chat):
         from app.apps import AppConfig
         patcher = mock.patch.object(AppConfig, 'chat', chat)
         patcher.start()
         self.addCleanup(patcher.stop)
+
+
+class SendMessageErrorTests(SendMessageTestBase):
+    '''send_message must never hand an upstream exception to the caller.
+
+    It used to return str(e). OpenAI's authentication error quotes part of
+    the key it rejected, so a public 500 became a way to read the deployed
+    key's first few and last four characters.
+    '''
+
+    # The shape of openai 0.27's AuthenticationError message.
+    UPSTREAM_MESSAGE = ('Incorrect API key provided: sk-proj-AbCd********WxYz. '
+                        'You can find your API key at '
+                        'https://platform.openai.com/account/api-keys.')
 
     def test_upstream_error_is_logged_not_returned(self):
         from app.views import GENERIC_ERROR
@@ -873,3 +886,83 @@ class SendMessageErrorTests(SimpleTestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual('the-server-prompt {chat_history} {question}',
                          chat.prompt_template)
+
+
+class SendMessageRateLimitTests(SendMessageTestBase):
+    '''Each caller gets a limited number of answers, counted by address.
+
+    Every answer is paid for with the deployment's key, and nothing else
+    stands between an anonymous caller and that key.
+    '''
+
+    def setUp(self):
+        super().setUp()
+        self.chat = mock.Mock()
+        self.chat.get_answer.return_value = {'answer': 'An answer.', 'documents': []}
+        self._patch_chat(self.chat)
+        self._set_rates()
+
+    def _set_rates(self, burst='2/min', daily='1000/day'):
+        patcher = mock.patch.object(ClientRateThrottle, 'THROTTLE_RATES', {
+            'send_message_burst': burst,
+            'send_message_daily': daily,
+        })
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _use_up_limit(self, **meta):
+        for _ in range(2):
+            self.assertEqual(200, self._post(self.VALID_PAYLOAD, **meta).status_code)
+
+    def test_each_limit_refuses_the_request_before_the_model(self):
+        for burst, daily in (('2/min', '1000/day'), ('1000/min', '2/day')):
+            with self.subTest(burst=burst, daily=daily):
+                cache.clear()
+                self.chat.reset_mock()
+                self._set_rates(burst, daily)
+                self._use_up_limit()
+
+                response = self._post(self.VALID_PAYLOAD)
+
+                self.assertEqual(429, response.status_code)
+                self.assertIn('Retry-After', response)
+                self.assertEqual(2, self.chat.get_answer.call_count)
+
+    @override_settings(CLIENT_IP_HEADER='HTTP_FLY_CLIENT_IP')
+    def test_one_callers_limit_does_not_hold_up_another(self):
+        self._use_up_limit(HTTP_FLY_CLIENT_IP='203.0.113.7')
+
+        self.assertEqual(429, self._post(self.VALID_PAYLOAD,
+                                         HTTP_FLY_CLIENT_IP='203.0.113.7').status_code)
+        self.assertEqual(200, self._post(self.VALID_PAYLOAD,
+                                         HTTP_FLY_CLIENT_IP='203.0.113.8').status_code)
+
+    def test_caller_cannot_reset_its_limit_with_headers(self):
+        '''X-Forwarded-For is never trusted, and Fly-Client-IP only on Fly.'''
+        cases = (
+            ('', {'HTTP_X_FORWARDED_FOR': '198.51.100.1',
+                  'HTTP_FLY_CLIENT_IP': '198.51.100.2'}),
+            ('HTTP_FLY_CLIENT_IP', {'HTTP_X_FORWARDED_FOR': '198.51.100.1'}),
+        )
+        for trusted_header, spoofed in cases:
+            with self.subTest(trusted_header=trusted_header):
+                cache.clear()
+                with self.settings(CLIENT_IP_HEADER=trusted_header):
+                    caller = ({'HTTP_FLY_CLIENT_IP': '203.0.113.7'}
+                              if trusted_header else {})
+                    self._use_up_limit(**caller)
+
+                    response = self._post(self.VALID_PAYLOAD, **{**caller, **spoofed})
+
+                self.assertEqual(429, response.status_code)
+
+    def test_ipv4_is_limited_per_address_and_ipv6_per_64(self):
+        self.assertNotEqual(rate_limit_key('203.0.113.7'), rate_limit_key('203.0.113.8'))
+        # An IPv6 client is typically handed a whole /64 to choose from.
+        self.assertEqual(rate_limit_key('2001:db8:1:2::1'),
+                         rate_limit_key('2001:db8:1:2:ffff:ffff:ffff:ffff'))
+        self.assertNotEqual(rate_limit_key('2001:db8:1:2::1'),
+                            rate_limit_key('2001:db8:1:3::1'))
+        # The same IPv4 client, reached over an IPv6 socket.
+        self.assertEqual(rate_limit_key('203.0.113.7'),
+                         rate_limit_key('::ffff:203.0.113.7'))

@@ -2,13 +2,14 @@ import logging
 
 from django.http import JsonResponse
 from django.shortcuts import render
-from rest_framework.decorators import api_view, parser_classes
+from rest_framework.decorators import api_view, parser_classes, throttle_classes
 from rest_framework.parsers import JSONParser
 from rest_framework.response import Response
 from rest_framework import status
 
 from app.apps import AppConfig
 from app.serializers import ChatInputSerializer
+from app.throttling import SendMessageBurstThrottle, SendMessageDailyThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ def healthz(request):
 
 @api_view(['POST'])
 @parser_classes([JSONParser])
+@throttle_classes([SendMessageBurstThrottle, SendMessageDailyThrottle])
 def send_message(request):
     serializer = ChatInputSerializer(data=request.data)
     if not serializer.is_valid():

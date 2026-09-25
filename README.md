@@ -39,6 +39,8 @@ Follow-up questions work. The chain rewrites *"and what about crypto?"* into a s
 
 The temperature is sent per request, between 0 and 1. The model and the condensing prompt are fixed on the server, because the endpoint needs no login and every call is paid for with the deployment's key: a caller who could choose the model could pick the most expensive one, and a caller who could write the prompt could have it do anything at all. An `llm_model` or `full_prompt` sent by an older client is ignored rather than rejected.
 
+Each caller gets 5 answers a minute and 50 a day, counted by IP address, with IPv6 counted per /64 because one client is typically handed a whole /64. Past either limit the endpoint answers `429` with a `Retry-After` header and the model is never called. Behind Fly's proxy the caller's address comes from the `Fly-Client-IP` header, which Fly sets itself; `CLIENT_IP_HEADER` in `fly.toml` is what tells the app to trust it, so the same image run anywhere else does not take a caller's word for their own address.
+
 ## The corpus
 
 39 public documents, downloaded from their publishers' own URLs at build time. They are not vendored in this repository.
@@ -161,7 +163,7 @@ cd src
 python manage.py test app
 ```
 
-**31 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, what the API returns to a caller when something fails, and that a caller cannot choose the model or the prompt.
+**35 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, what the API returns to a caller when something fails, that a caller cannot choose the model or the prompt, and the rate limits: that each one refuses before the model is called, that one caller's limit does not hold up another, and that a caller cannot reset their limit with a forged header.
 
 The citation tests were checked against the pre-fix loader as well as the fixed one. Drop the old `pdf_loader.py` into a throwaway copy of the tree and the same suite reports `FAILED (failures=2, errors=1)`, with the positional shift visible in the assertion — `'Consultation paper' != 'Unreadable guidance'`. A test that passes against both versions proves nothing.
 
@@ -196,8 +198,9 @@ src/
 └── app/
     ├── views.py                POST /api/send-message/
     ├── serializers.py          request validation
+    ├── throttling.py           per-caller rate limits
     ├── retrieval_chain.py      ConversationalRetrievalChain, condenser, citations
-    ├── tests.py                31 tests
+    ├── tests.py                35 tests
     └── documents/              the ingestion pipeline
         ├── paths.py            all corpus paths, anchored to this module
         ├── csv_processor.py    reads complyChat_sources.csv

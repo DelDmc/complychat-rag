@@ -1,4 +1,5 @@
 import os
+import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
@@ -42,6 +43,31 @@ CSRF_TRUSTED_ORIGINS = [
     for host in ALLOWED_HOSTS
     if host not in ("localhost", "127.0.0.1", "*")
 ]
+
+# The request header that carries the caller's real address, set by a proxy
+# we trust, e.g. "Fly-Client-IP". The rate limits in app/throttling.py count
+# callers by it. Unset, they fall back to REMOTE_ADDR and the header is
+# ignored, because off Fly nothing stops a caller from sending it themselves.
+# Stored in request.META form, so "Fly-Client-IP" becomes HTTP_FLY_CLIENT_IP.
+CLIENT_IP_HEADER = os.environ.get("CLIENT_IP_HEADER", "").strip()
+if CLIENT_IP_HEADER:
+    CLIENT_IP_HEADER = "HTTP_" + CLIENT_IP_HEADER.upper().replace("-", "_")
+
+# The rate limits keep their counts in the cache. Django's default,
+# LocMemCache, is per process, so each gunicorn worker would count separately
+# and a caller would get WEB_CONCURRENCY times the limit. A file-based cache
+# on local disk is shared by every worker on the machine. It is not shared
+# between machines; the app runs one, and a second would double the limit
+# rather than remove it.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.filebased.FileBasedCache",
+        "LOCATION": os.path.join(tempfile.gettempdir(), "complychat-cache"),
+        # One entry per client per limit. The default cap of 300 would start
+        # evicting counts, and resetting limits, after 150 callers in a day.
+        "OPTIONS": {"MAX_ENTRIES": 10000},
+    }
+}
 
 # Application definition
 
@@ -172,6 +198,13 @@ REST_FRAMEWORK = {
         'rest_framework.filters.SearchFilter',
     ),
     'SEARCH_PARAM': 'filter[search]',
+    # Per caller, applied to /api/send-message/ in app/throttling.py. Sized
+    # for a person trying the demo, not for a script: an answer takes seconds,
+    # so five a minute is not a limit a reader will meet.
+    'DEFAULT_THROTTLE_RATES': {
+        'send_message_burst': '5/min',
+        'send_message_daily': '50/day',
+    },
     'TEST_REQUEST_RENDERER_CLASSES': (
         'rest_framework_json_api.renderers.JSONRenderer',
     ),

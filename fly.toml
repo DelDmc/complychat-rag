@@ -32,6 +32,13 @@ primary_region = "sin"
   # does not necessarily present the public hostname as its Host header.
   DJANGO_ALLOWED_HOSTS = "complychat.fly.dev, localhost, 127.0.0.1"
 
+  # The per-caller rate limits on /api/send-message/ need the caller's real
+  # address. Behind Fly's proxy, REMOTE_ADDR is the proxy, so without this
+  # every caller would share one limit. Fly sets Fly-Client-IP itself on
+  # every request; it is only trusted when this names it, so the same image
+  # run anywhere else does not take a caller's word for their own address.
+  CLIENT_IP_HEADER = "Fly-Client-IP"
+
   # DEBUG is deliberately absent. settings.py defaults it to off, so a variable
   # nobody sets fails safe. Setting it to "0" here would work but would also
   # invite someone to flip it to "1" on a public host.
