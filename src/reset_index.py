@@ -18,9 +18,16 @@ In order:
   5. delete the downloaded PDFs, as the image build does
   6. send SIGHUP to gunicorn, so fresh workers open the new index
 
-Throughout, it requests the app's own /healthz every 30 seconds. Autostop is
-driven by requests through Fly's proxy, so an SSH session alone may not keep
-the machine awake for a run this long.
+Fly may suspend the machine mid-run. It did once on 2026-09-25, even though
+the app was being requested every 30 seconds. The process pauses and carries
+on at the next request, so a run survives it.
+
+Expect it to be slow and tight on memory. On shared-cpu-1x the text
+extraction used up the CPU burst allowance and ran at about 7% of a core, so
+the run took about three hours. The builder does the same step in about eight
+minutes. With both workers up, available memory fell to about 45MB while
+embedding the 8,959 chunks. `kill -TTOU <gunicorn master pid>` beforehand
+drops a worker, and the final SIGHUP restores the configured two.
 
 The rebuilt index lives in the machine's own filesystem, so it will outlast
 the next deploy too. Run this again after changing the corpus, or recreate
@@ -51,9 +58,7 @@ import os
 import shutil
 import signal
 import sys
-import threading
 import time
-import urllib.request
 
 import psutil
 
@@ -71,20 +76,6 @@ CHUNK_OVERLAP = 100
 BATCH_SIZE = 500
 
 PROBE_QUESTION = 'What does the Consumer Duty require?'
-KEEP_AWAKE_SECONDS = 30
-
-
-def keep_awake(stop):
-    app = os.environ.get('FLY_APP_NAME')
-    if not app:
-        print('FLY_APP_NAME is not set; not keeping the machine awake.', flush=True)
-        return
-    url = f'https://{app}.fly.dev/healthz'
-    while not stop.wait(KEEP_AWAKE_SECONDS):
-        try:
-            urllib.request.urlopen(url, timeout=10).read()
-        except Exception as e:
-            print(f'keep-awake request failed: {e}', flush=True)
 
 
 def build_chunks():
@@ -166,20 +157,15 @@ def main():
     if args.check:
         sys.exit(0 if check_index() else 1)
 
-    stop = threading.Event()
-    threading.Thread(target=keep_awake, args=(stop,), daemon=True).start()
-    try:
-        chunks = build_chunks()
-        if not chunks:
-            sys.exit('No chunks to index; the current index was left alone.')
-        rebuild(chunks)
-        if not check_index(expected_count=len(chunks)):
-            sys.exit('The new index failed its check; gunicorn was not reloaded.')
-        shutil.rmtree(APP_DOCS_DIR, ignore_errors=True)
-        if not reload_workers():
-            sys.exit(1)
-    finally:
-        stop.set()
+    chunks = build_chunks()
+    if not chunks:
+        sys.exit('No chunks to index; the current index was left alone.')
+    rebuild(chunks)
+    if not check_index(expected_count=len(chunks)):
+        sys.exit('The new index failed its check; gunicorn was not reloaded.')
+    shutil.rmtree(APP_DOCS_DIR, ignore_errors=True)
+    if not reload_workers():
+        sys.exit(1)
     print('Done: the app is serving the new index.', flush=True)
 
 
