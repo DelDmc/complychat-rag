@@ -372,7 +372,11 @@
           }
         } else {
           showAnswer(turn, result.answer, result.documents);
-          history.push({ human: question, ai: result.answer.slice(0, ANSWER_MAX_CHARS) });
+          // Cut by code point, which is how the serializer counts. A cut by
+          // UTF-16 unit, as slice() makes, can split an emoji in two, and the
+          // serializer refuses the half left behind with a 400.
+          var kept = Array.from(result.answer).slice(0, ANSWER_MAX_CHARS).join('');
+          history.push({ human: question, ai: kept });
           newConversation.hidden = false;
         }
 
