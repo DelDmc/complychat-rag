@@ -9,14 +9,25 @@ index on the machine itself.
 
 In order:
   1. download the sources (the partial-corpus gate applies), load and split them
-  2. only then wipe app/documents/vector_store, so a failed download leaves
-     the current index where it is
-  3. embed and add the chunks in batches, which keeps memory flat on a 1GB
-     machine that is also running two workers
-  4. check the new index: every chunk is in it, and a probe question
+  2. embed the chunks into a staging index, vector_store/chroma.new, in
+     batches, which keeps memory flat on a 1GB machine that is also running
+     two workers
+  3. check the staging index: every chunk is in it, and a probe question
      retrieves documents the way the app does
+  4. only then swap it in: remove vector_store/chroma and rename chroma.new
+     into its place
   5. delete the downloaded PDFs, as the image build does
   6. send SIGHUP to gunicorn, so fresh workers open the new index
+
+Nothing touches the live index before step 4, so a run that fails or is
+killed before then leaves it as it was, and a worker that restarts in the
+meantime still opens a complete index. It also keeps the run's writes away
+from the live path while the workers hold the old database open there:
+SQLite can take a new database's journal at that path for a hot journal of
+its own and roll it back. The next run clears any staging directory that a
+failed run left behind. Step 4 removes chroma/ rather than renaming it
+aside, because on an overlay root filesystem, renaming a directory that came
+from the image can fail with EXDEV.
 
 Fly may suspend the machine mid-run. It did once on 2026-09-25, even though
 the app was being requested every 30 seconds. The process pauses and carries
@@ -33,11 +44,16 @@ The rebuilt index lives in the machine's own filesystem, so it will outlast
 the next deploy too. Run this again after changing the corpus, or recreate
 the machine.
 
-From the repository root:
+From the repository root. The script goes to /tmp, not /app: the image
+already has a copy at /app/reset_index.py, and a file uploaded over it would
+stay on the machine and hide the image's copy on every later deploy, the
+same way chroma.sqlite3 did. The copy uploaded there on 2026-09-25 is
+already such a file, so don't run /app/reset_index.py on that machine:
 
-    fly ssh sftp put src/reset_index.py /app/reset_index.py -a complychat
-    fly ssh console -a complychat -C "python /app/reset_index.py --check"
-    fly ssh console -a complychat -C "sh -c 'cd /app && setsid nohup python reset_index.py > /tmp/reset_index.log 2>&1 &'"
+    fly ssh console -a complychat -C "rm -f /tmp/reset_index.py"
+    fly ssh sftp put src/reset_index.py /tmp/reset_index.py -a complychat
+    fly ssh console -a complychat -C "sh -c 'cd /app && PYTHONPATH=/app python /tmp/reset_index.py --check'"
+    fly ssh console -a complychat -C "sh -c 'cd /app && PYTHONPATH=/app setsid nohup python /tmp/reset_index.py > /tmp/reset_index.log 2>&1 &'"
     fly ssh console -a complychat -C "tail -n 20 /tmp/reset_index.log"
 
 --check reports on the current index and changes nothing.
@@ -64,16 +80,12 @@ import psutil
 
 from app.documents import process_documents
 from app.documents.document_splitter import DocumentSplitter
-from app.documents.paths import APP_DOCS_DIR
+from app.documents.paths import APP_DOCS_DIR, CHROMA_DIR, VECTOR_STORE_DIR
 from app.documents.pdf_loader import PDFLoader
 
-# Must match process_documents.process_source_documents, which builds the
-# index in the image.
-CHUNK_SIZE = 1500
-CHUNK_OVERLAP = 100
-
-# One embeddings request per batch: vector_store.py sends 500 texts a request.
-BATCH_SIZE = 500
+# Built beside the live index, inside vector_store/ so the ignore rules that
+# keep a local index out of git and the build context cover it too.
+STAGING_DIR = VECTOR_STORE_DIR / 'chroma.new'
 
 PROBE_QUESTION = 'What does the Consumer Duty require?'
 
@@ -82,25 +94,40 @@ def build_chunks():
     process_documents.download_source_documents(
         allow_partial=process_documents.allow_partial_from_env())
     documents = PDFLoader().load_documents()
-    chunks = DocumentSplitter(documents=documents, chunk_size=CHUNK_SIZE,
-                              chunk_overlap=CHUNK_OVERLAP).split_documents()
+    chunks = DocumentSplitter(documents=documents,
+                              chunk_size=process_documents.CHUNK_SIZE,
+                              chunk_overlap=process_documents.CHUNK_OVERLAP).split_documents()
     print(f'{len(documents)} documents split into {len(chunks)} chunks.', flush=True)
     return chunks
 
 
-def rebuild(chunks):
-    process_documents.clear_vector_store()
-    # Imported only now: importing vector_store opens the Chroma files, and
-    # they must be the new ones, not the ones just wiped.
-    from app.documents.vector_store import vectordb
-    for start in range(0, len(chunks), BATCH_SIZE):
-        vectordb.add_documents(chunks[start:start + BATCH_SIZE])
-        print(f'Embedded {min(start + BATCH_SIZE, len(chunks))}/{len(chunks)} chunks.', flush=True)
+def build_staging_index(chunks):
+    '''Embed the chunks into a fresh index at STAGING_DIR, and return it.'''
+    # Imported here, not at the top: importing vector_store constructs the
+    # embeddings client, which refuses to load without a key, and main()
+    # checks for the key first so that a missing one gets a clear message.
+    from app.documents.vector_store import EMBEDDING_BATCH_SIZE, open_vectordb
+    shutil.rmtree(STAGING_DIR, ignore_errors=True)
+    vectordb = open_vectordb(STAGING_DIR)
+    # One embeddings request per batch.
+    for start in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
+        vectordb.add_documents(chunks[start:start + EMBEDDING_BATCH_SIZE])
+        print(f'Embedded {min(start + EMBEDDING_BATCH_SIZE, len(chunks))}/{len(chunks)} chunks.', flush=True)
+    return vectordb
 
 
-def check_index(expected_count=None):
+def swap_in_staging_index():
+    '''Replace the live index with the checked staging index.'''
+    if CHROMA_DIR.exists():
+        shutil.rmtree(CHROMA_DIR)
+    # chroma.new was created by this run, so renaming it is safe on an
+    # overlay filesystem. shutil.move falls back to a copy if it is not.
+    shutil.move(str(STAGING_DIR), str(CHROMA_DIR))
+    print(f'Swapped the new index into {CHROMA_DIR}.', flush=True)
+
+
+def check_index(vectordb, expected_count=None):
     '''Count the collection and retrieve for a probe question, as the app does.'''
-    from app.documents.vector_store import vectordb
     count = vectordb._collection.count()
     retriever = vectordb.as_retriever(search_type='mmr', search_kwargs={'k': 5, 'fetch_k': 50})
     docs = retriever.get_relevant_documents(PROBE_QUESTION)
@@ -155,14 +182,24 @@ def main():
     if not os.environ.get('OPENAI_API_KEY'):
         sys.exit('OPENAI_API_KEY is not set; it is needed to embed the corpus.')
     if args.check:
-        sys.exit(0 if check_index() else 1)
+        from app.documents.vector_store import vectordb
+        sys.exit(0 if check_index(vectordb) else 1)
 
     chunks = build_chunks()
     if not chunks:
         sys.exit('No chunks to index; the current index was left alone.')
-    rebuild(chunks)
-    if not check_index(expected_count=len(chunks)):
-        sys.exit('The new index failed its check; gunicorn was not reloaded.')
+    staged = build_staging_index(chunks)
+    if not check_index(staged, expected_count=len(chunks)):
+        shutil.rmtree(STAGING_DIR, ignore_errors=True)
+        sys.exit('The new index failed its check; the live index and gunicorn were left alone.')
+    swap_in_staging_index()
+    # Reopened from the live path the way a worker will open it. Counting
+    # reads SQLite only, so this does not load a second copy of the vectors.
+    from app.documents.vector_store import open_vectordb
+    live_count = open_vectordb()._collection.count()
+    if live_count != len(chunks):
+        sys.exit(f'The live index holds {live_count} chunks after the swap, not {len(chunks)}; '
+                 'gunicorn was not reloaded.')
     shutil.rmtree(APP_DOCS_DIR, ignore_errors=True)
     if not reload_workers():
         sys.exit(1)

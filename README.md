@@ -165,7 +165,7 @@ cd src
 python manage.py test app       # needs SECRET_KEY and OPENAI_API_KEY set; src/.env above does it
 ```
 
-**39 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no real API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. Both variables can hold any value, but they must be set: the app builds the chain at startup and the embeddings client will not construct without a key, and the endpoint tests go through middleware that signs with `SECRET_KEY`. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, what the API returns to a caller when something fails, that a caller cannot choose the model or the prompt, the input-size caps and the history budget, and the rate limits: that each one refuses before the model is called, that one caller's limit does not hold up another, and that a caller cannot reset their limit with a forged header.
+**43 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no real API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. Both variables can hold any value, but they must be set: the app builds the chain at startup and the embeddings client will not construct without a key, and the endpoint tests go through middleware that signs with `SECRET_KEY`. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, what the API returns to a caller when something fails, that a caller cannot choose the model or the prompt, the input-size caps and the history budget, and the rate limits: that each one refuses before the model is called, that one caller's limit does not hold up another, and that a caller cannot reset their limit with a forged header. Four more cover `reset_index.py`: a rebuild on the machine replaces the live index only with an index that has passed its check, and does so before gunicorn reloads.
 
 The citation tests were checked against the pre-fix loader as well as the fixed one. Drop the old `pdf_loader.py` into a throwaway copy of the tree and the same suite reports `FAILED (failures=2, errors=1)`, with the positional shift visible in the assertion — `'Consultation paper' != 'Unreadable guidance'`. A test that passes against both versions proves nothing.
 
@@ -202,7 +202,7 @@ src/
     ├── serializers.py          request validation
     ├── throttling.py           per-caller rate limits
     ├── retrieval_chain.py      ConversationalRetrievalChain, condenser, citations
-    ├── tests.py                39 tests
+    ├── tests.py                43 tests
     └── documents/              the ingestion pipeline
         ├── paths.py            all corpus paths, anchored to this module
         ├── csv_processor.py    reads complyChat_sources.csv
