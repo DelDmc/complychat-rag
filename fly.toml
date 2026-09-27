@@ -39,6 +39,11 @@ primary_region = "sin"
   # run anywhere else does not take a caller's word for their own address.
   CLIENT_IP_HEADER = "Fly-Client-IP"
 
+  # Where the app and src/reset_index.py keep the Chroma index: on the volume
+  # in [mounts] below, in a subdirectory, so that nothing which clears the
+  # index ever deletes the volume's own root.
+  VECTOR_STORE_DIR = "/data/vector_store"
+
   # DEBUG is deliberately absent. settings.py defaults it to off, so a variable
   # nobody sets fails safe. Setting it to "0" here would work but would also
   # invite someone to flip it to "1" on a public host.
@@ -52,7 +57,7 @@ primary_region = "sin"
   # trade — but a cold boot is also wrong, because it re-imports chromadb and
   # onnxruntime and rebuilds the chain before the first request can be served
   # (measured locally: ~3s and ~164MB RSS per worker against an empty index;
-  # slower on a shared CPU with the real index baked in).
+  # slower on a shared CPU with the real index loaded).
   #
   # "suspend" snapshots the machine's memory instead of stopping it, so a
   # resume skips that import cost entirely. That is the whole reason to prefer
@@ -88,6 +93,17 @@ primary_region = "sin"
   size = "shared-cpu-1x"
   # 1GB, not the 256MB default: two workers each holding chromadb, onnxruntime
   # and an index will not fit in 256MB. Measured at 164MB per worker against an
-  # empty index, so this has headroom; revisit once the real index is baked,
-  # since memory is the main cost driver.
+  # empty index. With the real index loaded, a run of src/reset_index.py
+  # beside both workers left about 45MB free, so there is little headroom.
+  # Memory is the main cost driver.
   memory = "1gb"
+
+# The Chroma index lives on this volume, not in the image; the Dockerfile says
+# why. src/reset_index.py builds it here. A volume belongs to one machine and
+# starts empty, so a new machine, including a second one from
+# `fly scale count 2`, answers 503 until the script has filled its volume.
+# Fly takes daily snapshots of it and keeps five days of them.
+[mounts]
+  source = "complychat_index"
+  destination = "/data"
+  initial_size = "1gb"

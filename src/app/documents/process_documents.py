@@ -20,7 +20,7 @@ _TRUTHY = {'1', 'true', 'yes', 'on'}
 ALLOW_PARTIAL_CORPUS_ENV = 'ALLOW_PARTIAL_CORPUS'
 
 # How the corpus is cut into chunks before embedding. reset_index.py imports
-# these too, so a rebuild on the machine chunks exactly as the image build does.
+# these too, so the index it builds is chunked exactly as this module's is.
 CHUNK_SIZE = 1500
 CHUNK_OVERLAP = 100
 

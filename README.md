@@ -8,7 +8,7 @@ Built in 2023 as a prototype, and used by consultants at a regulatory-compliance
 
 ## Status
 
-**Deployed at [complychat.fly.dev](https://complychat.fly.dev/)**, on Fly.io, with the full 39-document index built into the image. The API answers at `POST https://complychat.fly.dev/api/send-message/`. The page at `/` is a placeholder; a chat interface in front of the API is the next piece of work. Everything described below also runs on a clean checkout.
+**Deployed at [complychat.fly.dev](https://complychat.fly.dev/)**, on Fly.io, with the full 39-document index on a volume. The API answers at `POST https://complychat.fly.dev/api/send-message/`. The page at `/` is a placeholder; a chat interface in front of the API is the next piece of work. Everything described below also runs on a clean checkout.
 
 ## What it does
 
@@ -146,17 +146,24 @@ gunicorn -c gunicorn_config.py config.wsgi:application        # as configured fo
 
 ## Deploying
 
-The app runs on Fly.io as `complychat`; `fly.toml` explains each of its settings. The corpus is built into the image: the Docker build downloads the 39 documents, embeds them and persists Chroma, so a machine starts with the full index and never fetches or embeds anything at runtime.
+The app runs on Fly.io as `complychat`; `fly.toml` explains each of its settings. The index is not in the image. It lives on a Fly volume mounted at `/data`, and `VECTOR_STORE_DIR` points the app there. A deploy only ships code: it downloads nothing, embeds nothing, and needs no OpenAI key at build time.
 
-The OpenAI key is needed twice: at build time for the embeddings, and at runtime for the chat model. The build gets it as a BuildKit secret, which is mounted for the one step that needs it and never written to an image layer.
+```bash
+fly deploy
+```
+
+The key is a runtime secret, for the chat model and for embedding questions:
 
 ```bash
 read -rs OPENAI_API_KEY && export OPENAI_API_KEY               # keeps the key out of shell history
-fly secrets set OPENAI_API_KEY="$OPENAI_API_KEY" --stage       # runtime; goes live with the deploy below
-fly deploy --build-secret OPENAI_API_KEY="$OPENAI_API_KEY"     # build time
+fly secrets set OPENAI_API_KEY="$OPENAI_API_KEY"
 ```
 
-The ingestion step sits in its own layer, built from `src/app/documents/` alone, so the builder's cache can reuse it until the pipeline, the sources CSV or the requirements change, and an ordinary code deploy then skips the download and the embeddings. Only a successful build is cached, though, and Fly does not keep a builder's cache forever. Pass the build secret on every deploy, and expect any deploy to rebuild the index. The partial-corpus gate applies in the build too: a document that fails to download fails the deploy, and `--build-arg ALLOW_PARTIAL_CORPUS=1` is the deliberate override.
+**Building the index.** `src/reset_index.py` builds the index on the volume. It checks the new index before swapping it in, then restarts the workers onto it. Run it when the volume is new and empty, and after any change to the sources CSV, the chunking or the embedding model, because a deploy never touches the index. The fast way does the downloading and text extraction locally, where both are quick and need no key, and sends the machine only the chunks to embed. The script's docstring has the commands.
+
+**An empty index is refused, not answered.** Each worker counts its index at startup. If it is empty, `POST /api/send-message/` returns `503` and logs an error, because the model would otherwise answer fluently with no sources. A volume belongs to one machine and starts empty, so a new machine, including a second one from `fly scale count`, returns `503` until its volume has been filled.
+
+**Why a volume.** The index used to be built into the image, but the machine suspends when idle, and a suspended machine keeps its own changes to the root filesystem across deploys. A `chroma.sqlite3` that an earlier release had opened stayed on the machine and hid the next image's index, so every answer came back with no sources, and nothing failed or logged. On the volume, the index is a file the machine owns outright, and deploys leave it alone.
 
 ## Testing
 
@@ -165,7 +172,7 @@ cd src
 python manage.py test app       # needs SECRET_KEY and OPENAI_API_KEY set; src/.env above does it
 ```
 
-**43 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no real API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. Both variables can hold any value, but they must be set: the app builds the chain at startup and the embeddings client will not construct without a key, and the endpoint tests go through middleware that signs with `SECRET_KEY`. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, what the API returns to a caller when something fails, that a caller cannot choose the model or the prompt, the input-size caps and the history budget, and the rate limits: that each one refuses before the model is called, that one caller's limit does not hold up another, and that a caller cannot reset their limit with a forged header. Four more cover `reset_index.py`: a rebuild on the machine replaces the live index only with an index that has passed its check, and does so before gunicorn reloads.
+**48 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no real API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. Both variables can hold any value, but they must be set: the app builds the chain at startup and the embeddings client will not construct without a key, and the endpoint tests go through middleware that signs with `SECRET_KEY`. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, what the API returns to a caller when something fails, that a caller cannot choose the model or the prompt, the input-size caps and the history budget, and the rate limits: that each one refuses before the model is called, that one caller's limit does not hold up another, and that a caller cannot reset their limit with a forged header. It also checks that an empty index gets a `503` before the model is called, and that the index can be moved only to an absolute path. Five tests cover `reset_index.py`: a rebuild on the machine replaces the live index only with an index that has passed its check, and does so before gunicorn reloads, and chunks prepared on another computer are indexed without downloading anything.
 
 The citation tests were checked against the pre-fix loader as well as the fixed one. Drop the old `pdf_loader.py` into a throwaway copy of the tree and the same suite reports `FAILED (failures=2, errors=1)`, with the positional shift visible in the assertion — `'Consultation paper' != 'Unreadable guidance'`. A test that passes against both versions proves nothing.
 
@@ -196,13 +203,14 @@ src/
 ├── manage.py
 ├── requirements.txt
 ├── gunicorn_config.py
+├── reset_index.py              builds the index on the machine's volume
 ├── config/                     Django project: settings, urls, wsgi
 └── app/
     ├── views.py                POST /api/send-message/
     ├── serializers.py          request validation
     ├── throttling.py           per-caller rate limits
     ├── retrieval_chain.py      ConversationalRetrievalChain, condenser, citations
-    ├── tests.py                43 tests
+    ├── tests.py                48 tests
     └── documents/              the ingestion pipeline
         ├── paths.py            all corpus paths, anchored to this module
         ├── csv_processor.py    reads complyChat_sources.csv

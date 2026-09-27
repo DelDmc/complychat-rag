@@ -25,9 +25,9 @@
 !**/.env.example
 
 # --- Local state, not build output -----------------------------------------
-# A stale Chroma tree from local runs, and the downloaded PDFs. Neither is the
-# real corpus: the Dockerfile downloads and indexes the corpus itself, and a
-# local vector_store in the context would be copied over the index it built.
+# A Chroma tree from local runs, and the downloaded PDFs. Neither belongs in
+# the image: the real index lives on the machine's volume, and a local one
+# shipped in the image would sit where a run without VECTOR_STORE_DIR looks.
 **/vector_store/
 **/comply_sources/
 

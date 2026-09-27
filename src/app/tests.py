@@ -779,6 +779,28 @@ class DisplaySummaryTests(PDFDownloaderTestBase):
 # from an empty cache in memory instead.
 @override_settings(CACHES={'default': {
     'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
+class VectorStoreDirTests(SimpleTestCase):
+    '''Where the index lives: beside the pipeline, or at an absolute override.'''
+
+    def test_defaults_beside_the_pipeline(self):
+        from app.documents.paths import DOCUMENTS_DIR, vector_store_dir
+        self.assertEqual(DOCUMENTS_DIR / 'vector_store', vector_store_dir({}))
+        self.assertEqual(DOCUMENTS_DIR / 'vector_store',
+                         vector_store_dir({'VECTOR_STORE_DIR': ''}))
+
+    def test_absolute_override_is_used(self):
+        from app.documents.paths import vector_store_dir
+        self.assertEqual(Path('/data/vector_store'),
+                         vector_store_dir({'VECTOR_STORE_DIR': '/data/vector_store'}))
+
+    def test_relative_override_is_refused(self):
+        # It would follow the working directory, and clearing the index
+        # deletes it.
+        from app.documents.paths import vector_store_dir
+        with self.assertRaises(ValueError):
+            vector_store_dir({'VECTOR_STORE_DIR': 'data/vector_store'})
+
+
 class SendMessageTestBase(SimpleTestCase):
 
     URL = '/api/send-message/'
@@ -791,6 +813,12 @@ class SendMessageTestBase(SimpleTestCase):
 
     def setUp(self):
         cache.clear()
+        # Whatever index this computer has, the endpoint tests need one that
+        # is not empty; SendMessageEmptyIndexTests covers the other case.
+        from app.apps import AppConfig
+        patcher = mock.patch.object(AppConfig, 'index_size', 1000)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def _post(self, payload, **meta):
         import json
@@ -887,6 +915,24 @@ class SendMessageErrorTests(SendMessageTestBase):
         self.assertEqual(200, response.status_code)
         self.assertEqual('the-server-prompt {chat_history} {question}',
                          chat.prompt_template)
+
+
+class SendMessageEmptyIndexTests(SendMessageTestBase):
+    '''An empty index gets a 503, never an answer without sources.'''
+
+    def test_refuses_before_the_model_is_called(self):
+        from app.apps import AppConfig
+        from app.views import INDEX_EMPTY_ERROR
+        chat = mock.Mock()
+        self._patch_chat(chat)
+
+        with mock.patch.object(AppConfig, 'index_size', 0), \
+                self.assertLogs('app.views', level='ERROR'):
+            response = self._post(self.VALID_PAYLOAD)
+
+        self.assertEqual(503, response.status_code)
+        self.assertIn(INDEX_EMPTY_ERROR, response.content.decode())
+        chat.get_answer.assert_not_called()
 
 
 class SendMessageRateLimitTests(SendMessageTestBase):
@@ -1131,3 +1177,25 @@ class ResetIndexTests(SimpleTestCase):
             self.reset_index.main()
 
         self.assertEqual(len(self.CHUNKS), self.live_count())
+
+    def test_exported_chunks_are_indexed_without_downloading(self):
+        from langchain.docstore.document import Document
+        chunks = [Document(page_content=f'chunk {i}',
+                           metadata={'name': 'PS22/9', 'relevance': 'r', 'link': 'l',
+                                     'source': '/home/someone/comply_sources/ps22-9.pdf'})
+                  for i in range(5)]
+        path = self.pdf_dir.parent / 'chunks.json.gz'
+        self.reset_index.export_chunks(chunks, path)
+
+        loaded = self.reset_index.load_chunks(path)
+        self.assertEqual([c.page_content for c in chunks], [c.page_content for c in loaded])
+        # Citation metadata survives; the exporting computer's paths do not.
+        self.assertEqual({'name': 'PS22/9', 'relevance': 'r', 'link': 'l',
+                          'source': 'ps22-9.pdf'}, loaded[0].metadata)
+
+        with mock.patch('sys.argv', ['reset_index.py', '--chunks', str(path)]), \
+                mock.patch.object(self.reset_index, 'check_index', return_value=True):
+            self.reset_index.main()
+
+        self.reset_index.build_chunks.assert_not_called()
+        self.assertEqual(len(chunks), self.live_count())
