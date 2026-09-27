@@ -9,7 +9,8 @@ from rest_framework import status
 
 from app.apps import AppConfig
 from app.documents.paths import CHROMA_DIR
-from app.serializers import ChatInputSerializer
+from app.retrieval_chain import HISTORY_MAX_PAIRS
+from app.serializers import ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, ChatInputSerializer
 from app.throttling import SendMessageBurstThrottle, SendMessageDailyThrottle
 
 logger = logging.getLogger(__name__)
@@ -19,8 +20,17 @@ INDEX_EMPTY_ERROR = 'The document index is not available. Please try again later
 
 
 def index(request):
-    """The landing page. Currently a placeholder; the chat UI replaces it."""
-    return render(request, 'index.html')
+    """The chat page, a client of send_message on the same origin.
+
+    It is handed the server's size caps rather than copying them, so a page
+    that echoes answers back as history cannot fall out of step with the
+    serializer and turn every follow-up into a 400.
+    """
+    return render(request, 'index.html', {
+        'question_max_chars': QUESTION_MAX_CHARS,
+        'answer_max_chars': ANSWER_MAX_CHARS,
+        'history_max_pairs': HISTORY_MAX_PAIRS,
+    })
 
 
 def healthz(request):

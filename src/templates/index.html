@@ -5,33 +5,530 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ComplyChat</title>
   <style>
-    :root { color-scheme: light dark; }
+    :root {
+      color-scheme: light;
+      --bg: #fafaf8;
+      --surface: #ffffff;
+      --text: #1c1e21;
+      --muted: #5c6166;
+      --border: #d9dad5;
+      --accent: #1d5c96;
+      --accent-hover: #174a7a;
+      --on-accent: #ffffff;
+      --question-bg: #ebf1f7;
+      --tag-bg: #eceee8;
+      --error-bg: #fcefed;
+      --error-border: #c23a2b;
+      --error-text: #7f2217;
+      --warn-bg: #fdf6e3;
+      --warn-border: #b7860b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        color-scheme: dark;
+        --bg: #16181b;
+        --surface: #1e2125;
+        --text: #e6e7e9;
+        --muted: #9ba1a8;
+        --border: #34383e;
+        --accent: #6ea8e0;
+        --accent-hover: #8dbbe8;
+        --on-accent: #0f1a26;
+        --question-bg: #1f2a36;
+        --tag-bg: #2a2e33;
+        --error-bg: #2f1a18;
+        --error-border: #e0685a;
+        --error-text: #f2b3aa;
+        --warn-bg: #2b2517;
+        --warn-border: #d9a93a;
+      }
+    }
+
+    * { box-sizing: border-box; }
     body {
-      margin: 0 auto;
-      padding: 3rem 1.25rem;
-      max-width: 42rem;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
       font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
     }
-    h1 { margin: 0 0 0.25rem; font-size: 1.6rem; }
-    .sub { margin: 0 0 2rem; opacity: 0.7; }
-    .notice {
-      padding: 1rem 1.25rem;
-      border-left: 3px solid currentColor;
-      opacity: 0.85;
+    a { color: var(--accent); }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+    .visually-hidden {
+      position: absolute; width: 1px; height: 1px; overflow: hidden;
+      clip: rect(0 0 0 0); white-space: nowrap;
     }
-    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    .page {
+      display: flex;
+      flex-direction: column;
+      min-height: 100vh;
+      min-height: 100dvh;
+      max-width: 46rem;
+      margin: 0 auto;
+      padding: 0 1rem;
+    }
+
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.75rem 1rem;
+      padding: 2rem 0 1rem;
+    }
+    /* On a phone the button wraps below the title instead of squeezing it. */
+    header > div { flex: 1 1 20rem; }
+    h1 { margin: 0; font-size: 1.6rem; line-height: 1.2; }
+    .sub { margin: 0.25rem 0 0; color: var(--muted); }
+
+    main { flex: 1; }
+
+    button {
+      font: inherit;
+      cursor: pointer;
+      border-radius: 8px;
+    }
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
+    .secondary {
+      flex: none;
+      padding: 0.35rem 0.8rem;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    .secondary:hover:not(:disabled) { border-color: var(--muted); }
+
+    .intro p { margin: 0 0 0.75rem; }
+    .examples { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0; padding: 0; list-style: none; }
+    .examples button {
+      padding: 0.45rem 0.8rem;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-size: 0.92rem;
+      text-align: left;
+    }
+    .examples button:hover { border-color: var(--accent); }
+
+    .turn { margin: 0 0 2rem; scroll-margin-top: 1rem; }
+    .question {
+      margin: 0 0 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      background: var(--question-bg);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .answer { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .pending { margin: 0; color: var(--muted); }
+    .pending::after {
+      content: "";
+      display: inline-block;
+      width: 1.2em;
+      text-align: left;
+      animation: dots 1.4s steps(4, end) infinite;
+    }
+    @keyframes dots {
+      0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .pending::after { animation: none; content: "..."; }
+    }
+
+    .notice {
+      margin: 0;
+      padding: 0.75rem 1rem;
+      border-left: 3px solid;
+      border-radius: 0 8px 8px 0;
+    }
+    .error { background: var(--error-bg); border-color: var(--error-border); color: var(--error-text); }
+    .warning { margin-top: 1rem; background: var(--warn-bg); border-color: var(--warn-border); }
+
+    .sources { margin-top: 1rem; padding-top: 0.75rem; border-top: 1px solid var(--border); }
+    .sources h2 {
+      margin: 0 0 0.4rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .sources ol { margin: 0; padding-left: 1.4rem; }
+    .sources li { margin: 0 0 0.4rem; overflow-wrap: anywhere; }
+    .tags { display: inline-flex; flex-wrap: wrap; gap: 0.3rem; margin-left: 0.3rem; vertical-align: 0.1em; }
+    .tag {
+      padding: 0 0.45rem;
+      border-radius: 999px;
+      background: var(--tag-bg);
+      color: var(--muted);
+      font-size: 0.75rem;
+      line-height: 1.6;
+      white-space: nowrap;
+    }
+
+    form {
+      position: sticky;
+      bottom: 0;
+      padding: 0.75rem 0 1rem;
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+    }
+    textarea {
+      display: block;
+      width: 100%;
+      min-height: 4.8rem;
+      max-height: 40vh;
+      padding: 0.6rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--surface);
+      color: var(--text);
+      font: inherit;
+      resize: vertical;
+    }
+    textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+    .actions {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-top: 0.5rem;
+    }
+    .hint { color: var(--muted); font-size: 0.85rem; }
+    .count { margin-left: 0.5rem; }
+    .send {
+      flex: none;
+      padding: 0.5rem 1.4rem;
+      border: 0;
+      background: var(--accent);
+      color: var(--on-accent);
+      font-weight: 600;
+    }
+    .send:hover:not(:disabled) { background: var(--accent-hover); }
+
+    footer { padding: 0 0 1.5rem; color: var(--muted); font-size: 0.85rem; }
+    footer p { margin: 0.5rem 0 0; }
+
+    @media (max-width: 30rem) {
+      header { padding-top: 1.25rem; }
+      .hint-keys { display: none; }
+    }
   </style>
 </head>
-<body>
-  <h1>ComplyChat</h1>
-  <p class="sub">Document-grounded question answering over UK and EU financial regulation.</p>
+<body data-endpoint="{% url 'send_message' %}"
+      data-answer-max-chars="{{ answer_max_chars }}"
+      data-history-max-pairs="{{ history_max_pairs }}">
+  <div class="page">
+    <header>
+      <div>
+        <h1>ComplyChat</h1>
+        <p class="sub">Answers on UK and EU financial regulation, drawn from 39 published documents and linked to the ones they came from.</p>
+      </div>
+      <button type="button" class="secondary" id="new-conversation" hidden>New conversation</button>
+    </header>
 
-  <div class="notice">
-    <p><strong>The chat interface is not built yet.</strong> The service behind it is
-    live: the 39 source documents are indexed, and every answer comes back with the
-    documents it was grounded in.</p>
-    <p>Ask it directly at <code>POST /api/send-message/</code>. The request format is in
-    the <a href="https://github.com/DelDmc/complychat-rag#what-it-does">README</a>.</p>
+    <main>
+      <div id="log" aria-live="polite">
+        <section class="intro" id="intro">
+          <p>Ask a question about FCA rules and guidance, UK payments and e-money regulation, anti-money-laundering or the EBA guidelines. Follow-up questions carry on from the answer before.</p>
+          <ul class="examples">
+            <li><button type="button">What does the Consumer Duty require of a payments firm?</button></li>
+            <li><button type="button">How must an e-money institution safeguard customers' funds?</button></li>
+            <li><button type="button">When must a firm apply enhanced due diligence?</button></li>
+            <li><button type="button">What rules apply to financial promotions for cryptoassets?</button></li>
+          </ul>
+        </section>
+      </div>
+      <noscript>
+        <p class="notice error">The chat needs JavaScript. The service can also be asked directly at
+        <code>POST {% url 'send_message' %}</code>; the request format is in the
+        <a href="https://github.com/DelDmc/complychat-rag#what-it-does">README</a>.</p>
+      </noscript>
+    </main>
+
+    <form id="ask">
+      <label for="question" class="visually-hidden">Your question</label>
+      <textarea id="question" name="question" maxlength="{{ question_max_chars }}" required
+                placeholder="Ask about UK or EU financial regulation"></textarea>
+      <div class="actions">
+        <span class="hint"><span class="hint-keys">Enter to send, Shift+Enter for a new line.</span><span class="count" id="count"></span></span>
+        <button type="submit" class="send" id="send">Send</button>
+      </div>
+    </form>
+
+    <footer>
+      <p>Answers are written by a language model from the documents listed under them. Check the source before relying on one.</p>
+      <p>The same service answers at <code>POST {% url 'send_message' %}</code>. <a href="https://github.com/DelDmc/complychat-rag">Source and API documentation</a>.</p>
+    </footer>
   </div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var page = document.body.dataset;
+      var ENDPOINT = page.endpoint;
+      // The serializer refuses an `ai` turn longer than this, and the page
+      // sends every answer back as history, so one long answer would turn
+      // every later question into a 400. It is cut to fit instead.
+      var ANSWER_MAX_CHARS = Number(page.answerMaxChars);
+      // The server keeps no more than this many turns; older ones need not be sent.
+      var HISTORY_MAX_PAIRS = Number(page.historyMaxPairs);
+      // Fixed and low, as the server's own default: in this domain a varied
+      // answer is a defect.
+      var TEMPERATURE = 0.1;
+
+      var log = document.getElementById('log');
+      var intro = document.getElementById('intro');
+      var form = document.getElementById('ask');
+      var input = document.getElementById('question');
+      var send = document.getElementById('send');
+      var count = document.getElementById('count');
+      var newConversation = document.getElementById('new-conversation');
+
+      // The answered turns so far, as the API takes them.
+      var history = [];
+      var busy = false;
+
+      form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        ask();
+      });
+
+      input.addEventListener('keydown', function (event) {
+        if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+          event.preventDefault();
+          ask();
+        }
+      });
+
+      input.addEventListener('input', updateCount);
+
+      intro.addEventListener('click', function (event) {
+        var example = event.target.closest('button');
+        if (!example) return;
+        input.value = example.textContent;
+        updateCount();
+        input.focus();
+      });
+
+      newConversation.addEventListener('click', function () {
+        history = [];
+        log.replaceChildren(intro);
+        newConversation.hidden = true;
+        input.focus();
+      });
+
+      function updateCount() {
+        var max = input.maxLength;
+        var used = input.value.length;
+        count.textContent = used > max * 0.8 ? used + ' / ' + max + ' characters' : '';
+      }
+
+      function setBusy(value) {
+        busy = value;
+        send.disabled = value;
+        newConversation.disabled = value;
+      }
+
+      async function ask() {
+        var question = input.value.trim();
+        if (!question || busy) return;
+
+        setBusy(true);
+        intro.remove();
+        var turn = addTurn(question);
+        input.value = '';
+        updateCount();
+
+        var result;
+        try {
+          var response = await fetch(ENDPOINT, {
+            method: 'POST',
+            // The API renders JSON:API only, and answers `application/json`
+            // with a 406.
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/vnd.api+json'
+            },
+            body: JSON.stringify({
+              question: question,
+              chat_history: history.slice(-HISTORY_MAX_PAIRS),
+              config: { llm_temperature: TEMPERATURE }
+            })
+          });
+          result = await readResponse(response);
+        } catch (error) {
+          result = { error: 'The service could not be reached. Check your connection and try again.' };
+        }
+
+        if (result.error) {
+          showError(turn, result.error);
+          // Give the question back, unless the next one is already being typed.
+          if (!input.value) {
+            input.value = question;
+            updateCount();
+          }
+        } else {
+          showAnswer(turn, result.answer, result.documents);
+          // Cut by code point, which is how the serializer counts. A cut by
+          // UTF-16 unit, as slice() makes, can split an emoji in two, and the
+          // serializer refuses the half left behind with a 400.
+          var kept = Array.from(result.answer).slice(0, ANSWER_MAX_CHARS).join('');
+          history.push({ human: question, ai: kept });
+          newConversation.hidden = false;
+        }
+
+        setBusy(false);
+        input.focus({ preventScroll: true });
+      }
+
+      async function readResponse(response) {
+        var body = null;
+        try {
+          body = await response.json();
+        } catch (error) {
+          // Not JSON: an error page from the proxy in front of the app.
+        }
+        var data = body && body.data;
+        if (response.ok && data && typeof data.answer === 'string') {
+          return { answer: data.answer, documents: Array.isArray(data.documents) ? data.documents : [] };
+        }
+        return { error: errorMessage(response, body) };
+      }
+
+      function errorMessage(response, body) {
+        switch (response.status) {
+          case 400:
+            var detail = firstString(body && body.errors);
+            return 'The question was not accepted' + (detail ? ': ' + detail : '.');
+          case 429:
+            var wait = formatWait(parseInt(response.headers.get('Retry-After'), 10));
+            return 'You have reached the limit on questions for now. ' +
+              (wait ? 'You can ask again in ' + wait + '.' : 'Please wait a little and try again.');
+          case 500:
+            return 'The answer could not be generated. Please try again in a moment.';
+          case 503:
+            return 'The document index is not available right now, and the service will not ' +
+              'answer without its sources. Please try again later.';
+        }
+        if (response.ok || response.status >= 500) {
+          return 'The service did not answer properly (' + response.status + '). Please try again in a moment.';
+        }
+        return 'Something went wrong (' + response.status + '). Please try again.';
+      }
+
+      // A field error arrives nested, as {"question": ["..."]} or
+      // {"chat_history": [{"ai": ["..."]}]}; a parse error as [{"detail": "..."}].
+      function firstString(value) {
+        if (typeof value === 'string') return value;
+        if (value && typeof value === 'object') {
+          var values = Object.values(value);
+          for (var i = 0; i < values.length; i++) {
+            var found = firstString(values[i]);
+            if (found) return found;
+          }
+        }
+        return '';
+      }
+
+      function formatWait(seconds) {
+        if (!(seconds > 0)) return '';
+        if (seconds < 90) return plural(seconds, 'second');
+        if (seconds < 90 * 60) return plural(Math.round(seconds / 60), 'minute');
+        return 'about ' + plural(Math.round(seconds / 3600), 'hour');
+      }
+
+      function plural(n, unit) {
+        return n + ' ' + unit + (n === 1 ? '' : 's');
+      }
+
+      function addTurn(question) {
+        var turn = element('article', 'turn');
+        turn.appendChild(element('p', 'question', question));
+        var reply = element('div', 'reply');
+        reply.setAttribute('aria-busy', 'true');
+        reply.appendChild(element('p', 'pending', 'Searching the documents and writing an answer'));
+        turn.appendChild(reply);
+        log.appendChild(turn);
+        turn.scrollIntoView({ block: 'start' });
+        return reply;
+      }
+
+      function showError(reply, message) {
+        reply.replaceChildren(element('p', 'notice error', message));
+        reply.setAttribute('aria-busy', 'false');
+      }
+
+      function showAnswer(reply, answer, documents) {
+        reply.replaceChildren(element('p', 'answer', answer));
+        reply.appendChild(sourcesFor(documents));
+        reply.setAttribute('aria-busy', 'false');
+        reply.parentNode.scrollIntoView({ block: 'start' });
+      }
+
+      function sourcesFor(documents) {
+        // The retriever returns chunks, and several can come from one document.
+        var seen = new Set();
+        var unique = documents.filter(function (doc) {
+          var key = doc.name + '\n' + doc.link;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+
+        if (!unique.length) {
+          return element('p', 'notice warning',
+            'No source documents came back with this answer. Treat it as unsupported.');
+        }
+
+        var section = element('section', 'sources');
+        section.appendChild(element('h2', null, unique.length === 1 ? 'Source' : 'Sources'));
+        var list = element('ol');
+        unique.forEach(function (doc) {
+          var item = element('li');
+          var href = safeLink(doc.link);
+          var name = doc.name || 'Untitled document';
+          if (href) {
+            var link = element('a', null, name);
+            link.href = href;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            item.appendChild(link);
+          } else {
+            item.appendChild(document.createTextNode(name));
+          }
+          var tags = String(doc.relevance || '').split(',')
+            .map(function (tag) { return tag.trim(); })
+            .filter(Boolean);
+          if (tags.length) {
+            var group = element('span', 'tags');
+            tags.forEach(function (tag) { group.appendChild(element('span', 'tag', tag)); });
+            item.appendChild(group);
+          }
+          list.appendChild(item);
+        });
+        section.appendChild(list);
+        return section;
+      }
+
+      function safeLink(link) {
+        try {
+          var url = new URL(link);
+          return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
+        } catch (error) {
+          return null;
+        }
+      }
+
+      function element(tag, className, text) {
+        var node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text != null) node.textContent = text;
+        return node;
+      }
+    })();
+  </script>
 </body>
 </html>
