@@ -779,6 +779,28 @@ class DisplaySummaryTests(PDFDownloaderTestBase):
 # from an empty cache in memory instead.
 @override_settings(CACHES={'default': {
     'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}})
+class VectorStoreDirTests(SimpleTestCase):
+    '''Where the index lives: beside the pipeline, or at an absolute override.'''
+
+    def test_defaults_beside_the_pipeline(self):
+        from app.documents.paths import DOCUMENTS_DIR, vector_store_dir
+        self.assertEqual(DOCUMENTS_DIR / 'vector_store', vector_store_dir({}))
+        self.assertEqual(DOCUMENTS_DIR / 'vector_store',
+                         vector_store_dir({'VECTOR_STORE_DIR': ''}))
+
+    def test_absolute_override_is_used(self):
+        from app.documents.paths import vector_store_dir
+        self.assertEqual(Path('/data/vector_store'),
+                         vector_store_dir({'VECTOR_STORE_DIR': '/data/vector_store'}))
+
+    def test_relative_override_is_refused(self):
+        # It would follow the working directory, and clearing the index
+        # deletes it.
+        from app.documents.paths import vector_store_dir
+        with self.assertRaises(ValueError):
+            vector_store_dir({'VECTOR_STORE_DIR': 'data/vector_store'})
+
+
 class SendMessageTestBase(SimpleTestCase):
 
     URL = '/api/send-message/'

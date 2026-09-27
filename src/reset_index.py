@@ -66,8 +66,8 @@ would hide every later version of it.
 --check reports on the current index and changes nothing.
 
 With both workers up, available memory fell to about 45MB while embedding
-the 8,959 chunks. `kill -TTOU <gunicorn master pid>` beforehand drops a worker, and
-the final SIGHUP restores the configured two.
+the 8,959 chunks. `kill -TTOU <gunicorn master pid>` beforehand drops a
+worker, and the final SIGHUP restores the configured two.
 '''
 
 import argparse
