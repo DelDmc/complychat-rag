@@ -33,15 +33,28 @@ machine is poor at the rest: on 2026-09-25, fca.org.uk answered 403 to all
 used up the CPU burst allowance and ran at about 7% of a core, so a full run
 took about three hours against the builder's eight minutes. --export-chunks
 downloads, loads and splits on this computer and needs no OpenAI key; the
-machine embeds with its own. From the repository root:
+machine embeds with its own. From the repository root, with the machine's
+id from `fly machine list -a complychat`:
 
     (cd src && python reset_index.py --export-chunks /tmp/chunks.json.gz)
+    fly machine update <id> -a complychat --autostop=off --yes
     fly ssh console -a complychat -C "rm -f /tmp/reset_index.py /tmp/chunks.json.gz"
     fly ssh sftp put src/reset_index.py /tmp/reset_index.py -a complychat
     fly ssh sftp put /tmp/chunks.json.gz /tmp/chunks.json.gz -a complychat
     fly ssh console -a complychat -C "sh -c 'cd /app && PYTHONPATH=/app setsid nohup python /tmp/reset_index.py --chunks /tmp/chunks.json.gz > /tmp/reset_index.log 2>&1 &'"
     fly ssh console -a complychat -C "tail -n 20 /tmp/reset_index.log"
     fly ssh console -a complychat -C "sh -c 'cd /app && PYTHONPATH=/app python /tmp/reset_index.py --check'"
+    fly machine update <id> -a complychat --autostop=suspend --yes
+
+Autostop is off for the run because a suspend can kill it. On 2026-09-27,
+Fly began suspending the machine 11 minutes into a run, a request cancelled
+the suspension, and the machine crashed and restarted with an empty /tmp.
+The live index was untouched, and the next run cleared the half-built
+staging index, but the run was lost. Requests to the public URL every
+minute did not prevent the suspend. On 2026-09-25, requests every 30
+seconds did not either, though that time the run paused and carried on.
+Each machine update restarts the machine, which is harmless before the run
+and after it.
 
 Without --chunks it does everything on the machine, downloads included.
 
@@ -52,11 +65,8 @@ would hide every later version of it.
 
 --check reports on the current index and changes nothing.
 
-Fly may suspend the machine mid-run. It did once on 2026-09-25, even though
-the app's public URL was being requested every 30 seconds. The process
-pauses and carries on at the next request, so a run survives it. With both
-workers up, available memory fell to about 45MB while embedding the 8,959
-chunks. `kill -TTOU <gunicorn master pid>` beforehand drops a worker, and
+With both workers up, available memory fell to about 45MB while embedding
+the 8,959 chunks. `kill -TTOU <gunicorn master pid>` beforehand drops a worker, and
 the final SIGHUP restores the configured two.
 '''
 
