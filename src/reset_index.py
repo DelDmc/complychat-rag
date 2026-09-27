@@ -1,14 +1,14 @@
 '''Rebuild the Chroma index in place, on a running machine.
 
-The Fly machine keeps its own filesystem changes across suspends and, as
-release v4 showed, across deploys. A chroma.sqlite3 that an earlier release
-had opened stayed on the machine and hid the populated one in the new image,
-so the app read an empty collection and every answer came back with no
-documents. Nothing failed and nothing was logged. This script replaces the
-index on the machine itself.
+The index lives on the machine's volume, at VECTOR_STORE_DIR (fly.toml), not
+in the image. A deploy never touches it, so a change to the corpus, the
+chunking or the embedding model reaches the app only through this script.
+It also fills a new or replaced volume, which starts empty; until it does,
+the app answers 503 rather than answer without sources.
 
 In order:
-  1. download the sources (the partial-corpus gate applies), load and split them
+  1. get the chunks: download the sources (the partial-corpus gate applies),
+     load and split them, or read them from a file made by --export-chunks
   2. embed the chunks into a staging index, vector_store/chroma.new, in
      batches, which keeps memory flat on a 1GB machine that is also running
      two workers
@@ -16,7 +16,7 @@ In order:
      retrieves documents the way the app does
   4. only then swap it in: remove vector_store/chroma and rename chroma.new
      into its place
-  5. delete the downloaded PDFs, as the image build does
+  5. delete any downloaded PDFs, as the image build used to
   6. send SIGHUP to gunicorn, so fresh workers open the new index
 
 Nothing touches the live index before step 4, so a run that fails or is
@@ -25,51 +25,44 @@ meantime still opens a complete index. It also keeps the run's writes away
 from the live path while the workers hold the old database open there:
 SQLite can take a new database's journal at that path for a hot journal of
 its own and roll it back. The next run clears any staging directory that a
-failed run left behind. Step 4 removes chroma/ rather than renaming it
-aside, because on an overlay root filesystem, renaming a directory that came
-from the image can fail with EXDEV.
+failed run left behind.
 
-Fly may suspend the machine mid-run. It did once on 2026-09-25, even though
-the app was being requested every 30 seconds. The process pauses and carries
-on at the next request, so a run survives it.
+Prepare the chunks locally and send the machine only the embedding. The
+machine is poor at the rest: on 2026-09-25, fca.org.uk answered 403 to all
+14 of its documents from there, and on shared-cpu-1x the text extraction
+used up the CPU burst allowance and ran at about 7% of a core, so a full run
+took about three hours against the builder's eight minutes. --export-chunks
+downloads, loads and splits on this computer and needs no OpenAI key; the
+machine embeds with its own. From the repository root:
 
-Expect it to be slow and tight on memory. On shared-cpu-1x the text
-extraction used up the CPU burst allowance and ran at about 7% of a core, so
-the run took about three hours. The builder does the same step in about eight
-minutes. With both workers up, available memory fell to about 45MB while
-embedding the 8,959 chunks. `kill -TTOU <gunicorn master pid>` beforehand
-drops a worker, and the final SIGHUP restores the configured two.
-
-The rebuilt index lives in the machine's own filesystem, so it will outlast
-the next deploy too. Run this again after changing the corpus, or recreate
-the machine.
-
-From the repository root. The script goes to /tmp, not /app: the image
-already has a copy at /app/reset_index.py, and a file uploaded over it would
-stay on the machine and hide the image's copy on every later deploy, the
-same way chroma.sqlite3 did. The copy uploaded there on 2026-09-25 is
-already such a file, so don't run /app/reset_index.py on that machine:
-
-    fly ssh console -a complychat -C "rm -f /tmp/reset_index.py"
+    (cd src && python reset_index.py --export-chunks /tmp/chunks.json.gz)
+    fly ssh console -a complychat -C "rm -f /tmp/reset_index.py /tmp/chunks.json.gz"
     fly ssh sftp put src/reset_index.py /tmp/reset_index.py -a complychat
-    fly ssh console -a complychat -C "sh -c 'cd /app && PYTHONPATH=/app python /tmp/reset_index.py --check'"
-    fly ssh console -a complychat -C "sh -c 'cd /app && PYTHONPATH=/app setsid nohup python /tmp/reset_index.py > /tmp/reset_index.log 2>&1 &'"
+    fly ssh sftp put /tmp/chunks.json.gz /tmp/chunks.json.gz -a complychat
+    fly ssh console -a complychat -C "sh -c 'cd /app && PYTHONPATH=/app setsid nohup python /tmp/reset_index.py --chunks /tmp/chunks.json.gz > /tmp/reset_index.log 2>&1 &'"
     fly ssh console -a complychat -C "tail -n 20 /tmp/reset_index.log"
+    fly ssh console -a complychat -C "sh -c 'cd /app && PYTHONPATH=/app python /tmp/reset_index.py --check'"
+
+Without --chunks it does everything on the machine, downloads included.
+
+The script goes to /tmp, not /app: the image already has a copy at
+/app/reset_index.py, and a machine that suspends keeps its own changes to
+the root filesystem across deploys, so a file uploaded over the image's copy
+would hide every later version of it.
 
 --check reports on the current index and changes nothing.
 
-Downloads from the machine can fail where the image build's succeed. On
-2026-09-25, fca.org.uk answered 403 to all 14 of its documents and
-legislation.gov.uk answered 202 to 3, and the partial-corpus gate stopped the
-run before anything was wiped. Downloading locally and uploading the missing
-files got past it, because PDFs already present and valid are skipped:
-
-    cd src && python -c "from app.documents.process_documents import download_source_documents as d; d()"
-    fly ssh sftp put src/app/documents/files/comply_sources/<file>.pdf \\
-        /app/app/documents/files/comply_sources/<file>.pdf -a complychat
+Fly may suspend the machine mid-run. It did once on 2026-09-25, even though
+the app's public URL was being requested every 30 seconds. The process
+pauses and carries on at the next request, so a run survives it. With both
+workers up, available memory fell to about 45MB while embedding the 8,959
+chunks. `kill -TTOU <gunicorn master pid>` beforehand drops a worker, and
+the final SIGHUP restores the configured two.
 '''
 
 import argparse
+import gzip
+import json
 import os
 import shutil
 import signal
@@ -77,14 +70,16 @@ import sys
 import time
 
 import psutil
+from langchain.docstore.document import Document
 
 from app.documents import process_documents
 from app.documents.document_splitter import DocumentSplitter
 from app.documents.paths import APP_DOCS_DIR, CHROMA_DIR, VECTOR_STORE_DIR
 from app.documents.pdf_loader import PDFLoader
 
-# Built beside the live index, inside vector_store/ so the ignore rules that
-# keep a local index out of git and the build context cover it too.
+# Built beside the live index, so the swap is a rename within one filesystem
+# (the volume, on Fly), and inside vector_store/ so the ignore rules that keep
+# a local index out of git and the build context cover it too.
 STAGING_DIR = VECTOR_STORE_DIR / 'chroma.new'
 
 PROBE_QUESTION = 'What does the Consumer Duty require?'
@@ -99,6 +94,22 @@ def build_chunks():
                               chunk_overlap=process_documents.CHUNK_OVERLAP).split_documents()
     print(f'{len(documents)} documents split into {len(chunks)} chunks.', flush=True)
     return chunks
+
+
+def export_chunks(chunks, path):
+    '''Write the chunks as gzipped JSON, for --chunks on the machine.'''
+    records = [{'page_content': chunk.page_content,
+                # The PDF's path on this computer; nothing reads it.
+                'metadata': {**chunk.metadata,
+                             'source': os.path.basename(chunk.metadata.get('source', ''))}}
+               for chunk in chunks]
+    with gzip.open(path, 'wt', encoding='utf-8') as f:
+        json.dump(records, f)
+
+
+def load_chunks(path):
+    with gzip.open(path, 'rt', encoding='utf-8') as f:
+        return [Document(**record) for record in json.load(f)]
 
 
 def build_staging_index(chunks):
@@ -175,9 +186,24 @@ def reload_workers():
 
 def main():
     parser = argparse.ArgumentParser(description='Rebuild the Chroma index on this machine.')
-    parser.add_argument('--check', action='store_true',
-                        help='report on the current index and change nothing')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--check', action='store_true',
+                      help='report on the current index and change nothing')
+    mode.add_argument('--export-chunks', metavar='PATH',
+                      help='download, load and split the corpus, write the chunks to PATH '
+                           'and stop; needs no OpenAI key')
+    mode.add_argument('--chunks', metavar='PATH',
+                      help='index the chunks in PATH, written by --export-chunks, '
+                           'instead of downloading the corpus')
     args = parser.parse_args()
+
+    if args.export_chunks:
+        chunks = build_chunks()
+        if not chunks:
+            sys.exit('No chunks to export.')
+        export_chunks(chunks, args.export_chunks)
+        print(f'Wrote {len(chunks)} chunks to {args.export_chunks}.', flush=True)
+        return
 
     if not os.environ.get('OPENAI_API_KEY'):
         sys.exit('OPENAI_API_KEY is not set; it is needed to embed the corpus.')
@@ -185,7 +211,7 @@ def main():
         from app.documents.vector_store import vectordb
         sys.exit(0 if check_index(vectordb) else 1)
 
-    chunks = build_chunks()
+    chunks = load_chunks(args.chunks) if args.chunks else build_chunks()
     if not chunks:
         sys.exit('No chunks to index; the current index was left alone.')
     staged = build_staging_index(chunks)

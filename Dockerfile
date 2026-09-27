@@ -25,41 +25,22 @@ WORKDIR /app
 COPY src/requirements.txt ./requirements.txt
 RUN pip install -r requirements.txt
 
-# Build the corpus into the image: download the 39 source PDFs, embed them,
-# and persist Chroma under app/documents/vector_store. Only the ingestion
-# package is copied at this point, so this layer (and the embedding spend) is
-# rebuilt when the pipeline or the sources CSV changes, not on every edit to a
-# view or template.
-#
-# The key arrives as a BuildKit secret: mounted for this one RUN, never
-# written to a layer or the image history. Pass it with
-#   fly deploy --build-secret OPENAI_API_KEY=...
-# required=true turns a forgotten flag into a clear "secret not found" error
-# instead of an embedding failure halfway through.
-#
-# The ingestion gate still applies: if any document fails to download, the
-# build fails rather than shipping a short index. ALLOW_PARTIAL_CORPUS=1, as
-# a --build-arg, is the deliberate override.
-#
-# The PDFs are deleted in the same RUN. Answers link to the publishers' own
-# URLs, so nothing at runtime reads them, and removing them in a later layer
-# would not shrink the image.
-COPY src/app/__init__.py ./app/__init__.py
-COPY src/app/documents/ ./app/documents/
-ARG ALLOW_PARTIAL_CORPUS=
-RUN --mount=type=secret,id=OPENAI_API_KEY,required=true \
-    OPENAI_API_KEY="$(cat /run/secrets/OPENAI_API_KEY)" \
-    python -m app.documents.data_utils process_source_documents \
-    && rm -rf app/documents/files/comply_sources
-
-# .dockerignore keeps any local vector_store out of the context, so this
-# cannot overwrite the index built above.
+# The corpus index is not in the image. It lives on the machine's volume
+# (fly.toml), where src/reset_index.py builds it, so the build needs no
+# OpenAI key and never downloads or embeds anything. It used to be built
+# here, but a machine that suspends keeps its own root filesystem across
+# deploys, and a stale chroma.sqlite3 it had opened hid every later image's
+# index. .dockerignore keeps any local index and PDFs out of the context.
 COPY src/ ./
 
 # Whitenoise serves from STATIC_ROOT, which only exists once collectstatic has
 # run. The placeholder values are build-time only and never reach the image's
 # runtime environment — collectstatic needs the settings module to import, not
 # a working key.
+#
+# collectstatic starts the app, and the app opens the index. VECTOR_STORE_DIR
+# points it at a scratch directory, deleted in the same RUN, so the image
+# carries no empty index that could be mistaken for the real one.
 #
 # OPENAI_API_KEY is here because app.apps.AppConfig.ready() builds the chain at
 # startup, which imports vector_store, which constructs OpenAIEmbeddings at
@@ -69,7 +50,9 @@ COPY src/ ./
 RUN SECRET_KEY=build-only-not-a-secret \
     DJANGO_ALLOWED_HOSTS=localhost \
     OPENAI_API_KEY=sk-build-placeholder \
-    python manage.py collectstatic --noinput
+    VECTOR_STORE_DIR=/tmp/collectstatic-index \
+    python manage.py collectstatic --noinput \
+    && rm -rf /tmp/collectstatic-index
 
 EXPOSE 8000
 

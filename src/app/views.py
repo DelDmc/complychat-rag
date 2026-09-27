@@ -8,12 +8,14 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from app.apps import AppConfig
+from app.documents.paths import CHROMA_DIR
 from app.serializers import ChatInputSerializer
 from app.throttling import SendMessageBurstThrottle, SendMessageDailyThrottle
 
 logger = logging.getLogger(__name__)
 
 GENERIC_ERROR = 'The answer could not be generated. Please try again later.'
+INDEX_EMPTY_ERROR = 'The document index is not available. Please try again later.'
 
 
 def index(request):
@@ -44,6 +46,13 @@ def send_message(request):
     question = serializer.validated_data['question']
     processed_chat_history = [(message.get("human", ""), message.get("ai", "")) for message in chat_history if message["ai"]]
     config = serializer.validated_data['config']
+
+    if not AppConfig.index_size:
+        # The chain would still answer, fluently and with no sources: the one
+        # answer this service must not give. An empty index means a new or
+        # replaced volume that reset_index.py has not filled yet.
+        logger.error("send_message refused: the index at %s is empty", CHROMA_DIR)
+        return Response({'error': INDEX_EMPTY_ERROR}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     try:
         chat = AppConfig.chat
