@@ -1070,6 +1070,26 @@ class RecentHistoryTests(SimpleTestCase):
         self.assertEqual([longest], recent_history([longest, longest]))
 
 
+class ChatPageTests(SimpleTestCase):
+    '''The page at / is a client of the API, and must agree with it.'''
+
+    def test_page_posts_to_the_endpoint_within_the_servers_caps(self):
+        '''The page sends each answer back as history, cut to the serializer's
+        cap. A page that assumed a larger cap than the server's would get a
+        400 on every question after one long answer.'''
+        from django.urls import reverse
+        from app.retrieval_chain import HISTORY_MAX_PAIRS
+        from app.serializers import ANSWER_MAX_CHARS, QUESTION_MAX_CHARS
+
+        response = self.client.get('/', HTTP_HOST='localhost')
+
+        self.assertEqual(200, response.status_code)
+        self.assertContains(response, f'data-endpoint="{reverse("send_message")}"')
+        self.assertContains(response, f'data-answer-max-chars="{ANSWER_MAX_CHARS}"')
+        self.assertContains(response, f'data-history-max-pairs="{HISTORY_MAX_PAIRS}"')
+        self.assertContains(response, f'maxlength="{QUESTION_MAX_CHARS}"')
+
+
 # ---------------------------------------------------------------------------
 # reset_index.py: the live index is replaced only by one that passed its check.
 # ---------------------------------------------------------------------------

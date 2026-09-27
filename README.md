@@ -8,7 +8,7 @@ Built in 2023 as a prototype, and used by consultants at a regulatory-compliance
 
 ## Status
 
-**Deployed at [complychat.fly.dev](https://complychat.fly.dev/)**, on Fly.io, with the full 39-document index on a volume. The API answers at `POST https://complychat.fly.dev/api/send-message/`. The page at `/` is a placeholder; a chat interface in front of the API is the next piece of work. Everything described below also runs on a clean checkout.
+**Deployed at [complychat.fly.dev](https://complychat.fly.dev/)**, on Fly.io, with the full 39-document index on a volume. The API answers at `POST https://complychat.fly.dev/api/send-message/`. The page at `/` is a chat interface over the same API: it keeps the conversation so follow-up questions work, lists and links the source documents under each answer, and says plainly when the rate limit, an empty index or a failed answer stops a question. Everything described below also runs on a clean checkout.
 
 ## What it does
 
@@ -22,18 +22,22 @@ One POST endpoint, `POST /api/send-message/`. You send a question and the conver
 }
 ```
 
-The answer payload:
+The answer payload, wrapped in `data` because the API renders JSON:API:
 
 ```json
 {
-  "answer": "...",
-  "documents": [
-    {"name": "A new Consumer Duty ... Policy Statement PS22-9",
-     "relevance": "General Fin.Services,Payments/e-money",
-     "link": "https://www.fca.org.uk/publication/policy/ps22-9.pdf"}
-  ]
+  "data": {
+    "answer": "...",
+    "documents": [
+      {"name": "A new Consumer Duty ... Policy Statement PS22-9",
+       "relevance": "General Fin.Services,Payments/e-money",
+       "link": "https://www.fca.org.uk/publication/policy/ps22-9.pdf"}
+    ]
+  }
 }
 ```
+
+Errors come back under `errors` instead. For the same reason, a request that sends `Accept: application/json` gets a `406`; send `Accept: application/vnd.api+json`, or `*/*`, which is what curl and `fetch` send unless told otherwise.
 
 Follow-up questions work. The chain rewrites *"and what about crypto?"* into a standalone question before retrieval, using a custom condensing prompt in place of LangChain's default. Retrieval is only as good as the question it is given, so condensing is where a conversational RAG system quietly succeeds or fails.
 
@@ -172,7 +176,7 @@ cd src
 python manage.py test app       # needs SECRET_KEY and OPENAI_API_KEY set; src/.env above does it
 ```
 
-**48 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no real API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. Both variables can hold any value, but they must be set: the app builds the chain at startup and the embeddings client will not construct without a key, and the endpoint tests go through middleware that signs with `SECRET_KEY`. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, what the API returns to a caller when something fails, that a caller cannot choose the model or the prompt, the input-size caps and the history budget, and the rate limits: that each one refuses before the model is called, that one caller's limit does not hold up another, and that a caller cannot reset their limit with a forged header. It also checks that an empty index gets a `503` before the model is called, and that the index can be moved only to an absolute path. Five tests cover `reset_index.py`: a rebuild on the machine replaces the live index only with an index that has passed its check, and does so before gunicorn reloads, and chunks prepared on another computer are indexed without downloading anything.
+**49 tests, `unittest` through Django's test runner**, all `SimpleTestCase`. No network, no real API key and no test database — HTTP is stubbed at the session boundary, and the PDF loader and the chain are patched out. Both variables can hold any value, but they must be set: the app builds the chain at startup and the embeddings client will not construct without a key, and the endpoint tests go through middleware that signs with `SECRET_KEY`. The suite covers the citation-metadata fix, the downloader's retry and fallback behaviour, the size cap, the skip-if-present path, the partial-corpus gate, the sources CSV itself, what the API returns to a caller when something fails, that a caller cannot choose the model or the prompt, the input-size caps and the history budget, and the rate limits: that each one refuses before the model is called, that one caller's limit does not hold up another, and that a caller cannot reset their limit with a forged header. It also checks that an empty index gets a `503` before the model is called, that the index can be moved only to an absolute path, and that the chat page takes its size caps from the API rather than keeping its own copies. Five tests cover `reset_index.py`: a rebuild on the machine replaces the live index only with an index that has passed its check, and does so before gunicorn reloads, and chunks prepared on another computer are indexed without downloading anything.
 
 The citation tests were checked against the pre-fix loader as well as the fixed one. Drop the old `pdf_loader.py` into a throwaway copy of the tree and the same suite reports `FAILED (failures=2, errors=1)`, with the positional shift visible in the assertion — `'Consultation paper' != 'Unreadable guidance'`. A test that passes against both versions proves nothing.
 
@@ -204,13 +208,14 @@ src/
 ├── requirements.txt
 ├── gunicorn_config.py
 ├── reset_index.py              builds the index on the machine's volume
+├── templates/index.html        the chat page, served at /
 ├── config/                     Django project: settings, urls, wsgi
 └── app/
     ├── views.py                POST /api/send-message/
     ├── serializers.py          request validation
     ├── throttling.py           per-caller rate limits
     ├── retrieval_chain.py      ConversationalRetrievalChain, condenser, citations
-    ├── tests.py                48 tests
+    ├── tests.py                49 tests
     └── documents/              the ingestion pipeline
         ├── paths.py            all corpus paths, anchored to this module
         ├── csv_processor.py    reads complyChat_sources.csv
