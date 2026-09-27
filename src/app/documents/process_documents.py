@@ -19,6 +19,11 @@ _TRUTHY = {'1', 'true', 'yes', 'on'}
 
 ALLOW_PARTIAL_CORPUS_ENV = 'ALLOW_PARTIAL_CORPUS'
 
+# How the corpus is cut into chunks before embedding. reset_index.py imports
+# these too, so a rebuild on the machine chunks exactly as the image build does.
+CHUNK_SIZE = 1500
+CHUNK_OVERLAP = 100
+
 def allow_partial_from_env() -> bool:
     '''Whether a reduced corpus has been consciously accepted.
 
@@ -58,12 +63,10 @@ def process_source_documents(allow_partial: Optional[bool] = None):
     from .vector_store import vectordb
     documents_loader = PDFLoader()
     documents = documents_loader.load_documents()
-    chunk_size = 1500
-    chunk_overlap = 100
     splitter = DocumentSplitter(
         documents=documents, 
-        chunk_size=chunk_size, 
-        chunk_overlap=chunk_overlap)
+        chunk_size=CHUNK_SIZE, 
+        chunk_overlap=CHUNK_OVERLAP)
     splitted_documents = splitter.split_documents()
     print("Documents loaded and splitted successfully...")
     

@@ -19,6 +19,7 @@ SimpleTestCase because none of the code under test touches the ORM.
 import os
 import tempfile
 from io import StringIO
+from pathlib import Path
 from unittest import mock
 from unittest.mock import patch
 
@@ -1021,3 +1022,112 @@ class RecentHistoryTests(SimpleTestCase):
 
         self.assertLessEqual(QUESTION_MAX_CHARS + ANSWER_MAX_CHARS, HISTORY_MAX_CHARS)
         self.assertEqual([longest], recent_history([longest, longest]))
+
+
+# ---------------------------------------------------------------------------
+# reset_index.py: the live index is replaced only by one that passed its check.
+# ---------------------------------------------------------------------------
+
+class _FakeIndex:
+    '''Stands in for a Chroma store: a directory whose file counts the chunks.'''
+
+    fail_on_batch = None
+
+    def __init__(self, persist_directory):
+        self.batches = 0
+        self.db = Path(persist_directory) / 'chroma.sqlite3'
+        self.db.parent.mkdir(parents=True, exist_ok=True)
+        if not self.db.exists():
+            self.db.write_text('0')
+        self._collection = self
+
+    def add_documents(self, chunks):
+        self.batches += 1
+        if self.batches == _FakeIndex.fail_on_batch:
+            raise RuntimeError('Simulated embeddings failure')
+        self.db.write_text(str(self.count() + len(chunks)))
+
+    def count(self):
+        return int(self.db.read_text())
+
+
+class ResetIndexTests(SimpleTestCase):
+    '''The live index must outlast any run that does not finish its check.'''
+
+    CHUNKS = ['one', 'two', 'three']
+
+    def setUp(self):
+        import reset_index
+        self.reset_index = reset_index
+
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
+        vector_store_dir = Path(tmp_dir.name) / 'vector_store'
+        self.live_dir = vector_store_dir / 'chroma'
+        self.staging_dir = vector_store_dir / 'chroma.new'
+        self.pdf_dir = Path(tmp_dir.name) / 'comply_sources'
+        self.pdf_dir.mkdir()
+        _FakeIndex(self.live_dir).db.write_text('42')
+
+        _FakeIndex.fail_on_batch = None
+        self.addCleanup(setattr, _FakeIndex, 'fail_on_batch', None)
+        fake_vector_store = mock.Mock(
+            EMBEDDING_BATCH_SIZE=2,
+            open_vectordb=lambda persist_directory=self.live_dir: _FakeIndex(persist_directory),
+        )
+        self.reload_workers = mock.Mock(return_value=True)
+        for patcher in [
+            mock.patch.dict('sys.modules', {'app.documents.vector_store': fake_vector_store}),
+            mock.patch.dict(os.environ, {'OPENAI_API_KEY': 'sk-test'}),
+            mock.patch('sys.argv', ['reset_index.py']),
+            mock.patch.object(reset_index, 'CHROMA_DIR', self.live_dir),
+            mock.patch.object(reset_index, 'STAGING_DIR', self.staging_dir),
+            mock.patch.object(reset_index, 'APP_DOCS_DIR', self.pdf_dir),
+            mock.patch.object(reset_index, 'build_chunks', return_value=self.CHUNKS),
+            mock.patch.object(reset_index, 'reload_workers', self.reload_workers),
+            mock.patch('builtins.print'),
+        ]:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def live_count(self):
+        return _FakeIndex(self.live_dir).count()
+
+    def test_failure_while_embedding_leaves_the_live_index_alone(self):
+        _FakeIndex.fail_on_batch = 2
+
+        with self.assertRaises(RuntimeError):
+            self.reset_index.main()
+
+        self.assertEqual(42, self.live_count())
+        self.reload_workers.assert_not_called()
+
+    def test_failed_check_leaves_the_live_index_and_gunicorn_alone(self):
+        with mock.patch.object(self.reset_index, 'check_index', return_value=False):
+            with self.assertRaises(SystemExit):
+                self.reset_index.main()
+
+        self.assertEqual(42, self.live_count())
+        self.assertFalse(self.staging_dir.exists())
+        self.reload_workers.assert_not_called()
+
+    def test_passing_check_swaps_the_new_index_in_before_reloading(self):
+        # What the fresh workers would open, at the moment they are started.
+        self.reload_workers.side_effect = lambda: self.live_count() == len(self.CHUNKS)
+
+        with mock.patch.object(self.reset_index, 'check_index', return_value=True):
+            self.reset_index.main()
+
+        self.assertEqual(len(self.CHUNKS), self.live_count())
+        self.assertFalse(self.staging_dir.exists())
+        self.assertFalse(self.pdf_dir.exists())
+        self.reload_workers.assert_called_once_with()
+
+    def test_a_stale_staging_directory_is_cleared_first(self):
+        # Left behind by a run that was killed mid-embedding.
+        _FakeIndex(self.staging_dir).db.write_text('7')
+
+        with mock.patch.object(self.reset_index, 'check_index', return_value=True):
+            self.reset_index.main()
+
+        self.assertEqual(len(self.CHUNKS), self.live_count())
