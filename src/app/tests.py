@@ -1070,6 +1070,41 @@ class RecentHistoryTests(SimpleTestCase):
         self.assertEqual([longest], recent_history([longest, longest]))
 
 
+class ChatModelParamsTests(SimpleTestCase):
+    '''What the chat model is sent, beyond the messages.
+
+    gpt-6.1-terra answers 400 to a null max_tokens and to any temperature
+    other than its default, and langchain 0.0.300 sends both unasked.
+    '''
+
+    def _params(self, **kwargs):
+        from app.retrieval_chain import ChatModel
+        return ChatModel(model_name='some-model', openai_api_key='sk-test', **kwargs)._default_params
+
+    def test_no_temperature_and_no_null_max_tokens(self):
+        params = self._params(temperature=0.1)
+
+        self.assertNotIn('temperature', params)
+        self.assertNotIn('max_tokens', params)
+        self.assertEqual('some-model', params['model'])
+
+    def test_a_max_tokens_that_was_set_is_kept(self):
+        self.assertEqual(500, self._params(max_tokens=500)['max_tokens'])
+
+    def test_both_calls_of_the_chain_use_it(self):
+        # The answering call and the condensing call each named the model
+        # separately once; a retired model in either one is a 500.
+        from app import retrieval_chain
+        chat = retrieval_chain.Chat()
+        with mock.patch.object(retrieval_chain, 'ChatModel') as model, \
+                mock.patch.object(retrieval_chain, 'ConversationalRetrievalChain') as chain_class, \
+                mock.patch.object(retrieval_chain, 'LLMChain'):
+            chain_class.from_llm.return_value.return_value = {'answer': 'An answer.', 'source_documents': []}
+            chat.get_answer('A question?', [])
+
+        self.assertEqual([mock.call(model_name=retrieval_chain.LLM_MODEL)] * 2, model.call_args_list)
+
+
 class ChatPageTests(SimpleTestCase):
     '''The page at / is a client of the API, and must agree with it.'''
 
