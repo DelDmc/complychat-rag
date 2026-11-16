@@ -20,6 +20,9 @@ class ChatConfigSerializer(serializers.Serializer):
     # general-purpose GPT-4 proxy, at up to 10KB of input per call. A client
     # that still sends either is not rejected; DRF drops undeclared fields, so
     # they have no effect.
+    # Still required, so existing clients keep working, but no longer used:
+    # the current model accepts only its default temperature (see
+    # retrieval_chain.ChatModel).
     llm_temperature = serializers.FloatField(min_value=0.0, max_value=1.0)
     
 class ChatInputSerializer(serializers.Serializer):
