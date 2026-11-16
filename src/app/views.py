@@ -55,7 +55,6 @@ def send_message(request):
     chat_history = serializer.validated_data['chat_history']
     question = serializer.validated_data['question']
     processed_chat_history = [(message.get("human", ""), message.get("ai", "")) for message in chat_history if message["ai"]]
-    config = serializer.validated_data['config']
 
     if not AppConfig.index_size:
         # The chain would still answer, fluently and with no sources: the one
@@ -66,7 +65,6 @@ def send_message(request):
 
     try:
         chat = AppConfig.chat
-        chat.llm_temperature = config['llm_temperature']
         response = chat.get_answer(question, processed_chat_history)
         return Response(response, status=status.HTTP_200_OK)
 
