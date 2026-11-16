@@ -23,7 +23,11 @@ WORKDIR /app
 
 # Requirements first, so a source-only change does not reinstall 130 packages.
 COPY src/requirements.txt ./requirements.txt
-RUN pip install -r requirements.txt
+# HNSWLIB_NO_NATIVE: chroma-hnswlib otherwise compiles with -march=native, for
+# the CPU of whichever builder ran this layer. A builder with a newer CPU than
+# the machine's host produces a library that dies with SIGILL on the first
+# index query, which the proxy reports as a 502 on every question.
+RUN HNSWLIB_NO_NATIVE=1 pip install -r requirements.txt
 
 # The corpus index is not in the image. It lives on the machine's volume
 # (fly.toml), where src/reset_index.py builds it, so the build needs no
